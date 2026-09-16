@@ -21,21 +21,39 @@ from nmap_scan import scan_target, HostInfo
 from exploits import load_exploit_index, correlate_all_services, ExploitMatch
 from report import generate_report, generate_html_report, _security_observations
 
+APP_NAME = "NetSploitXZ"
+APP_TAGLINE = "Network Reconnaissance & Exploit Discovery"
+
 # ---------------------------------------------------------------------
-# Color / style constants — one place to tweak the look of the whole app
+# Color / style constants — one place to tweak the look of the whole app.
+# Dark, restrained "Kali-style" security-tool palette: near-black
+# background, slightly lighter charcoal panels, a muted green/cyan
+# accent, and status colors reserved for High/Medium/Low/Info meaning.
 # ---------------------------------------------------------------------
-BG_DARK = "#1e1e2e"
-BG_PANEL = "#262638"
-FG_TEXT = "#e4e4f0"
-FG_MUTED = "#9a9ab0"
-ACCENT = "#4fd1c5"          # teal accent for buttons/headers
-ACCENT_DARK = "#2f9e93"
-COLOR_HIGH = "#ff6b6b"
-COLOR_MEDIUM = "#ffd166"
-COLOR_LOW = "#8ecae6"
+BG_DARK = "#12141a"
+BG_PANEL = "#1a1d26"
+BG_PANEL_ALT = "#20232e"        # alternating row / slightly raised panel tone
+BG_INPUT = "#1e212b"
+BORDER = "#2c3040"
+FG_TEXT = "#d7dbe4"
+FG_MUTED = "#7c8494"
+ACCENT = "#3ddc97"              # muted green accent (primary)
+ACCENT_DARK = "#2bb87f"
+ACCENT_CYAN = "#4fd1c5"         # secondary accent for subtitles/info
+COLOR_HIGH = "#ff5c5c"
+COLOR_MEDIUM = "#ffb454"
+COLOR_LOW = "#5cc8ff"
+COLOR_INFO = "#8b93a7"
 FONT_NORMAL = ("Segoe UI", 10)
-FONT_HEADER = ("Segoe UI", 12, "bold")
+FONT_HEADER = ("Segoe UI", 15, "bold")
+FONT_SUBHEADER = ("Segoe UI", 9)
+FONT_SECTION = ("Segoe UI", 10, "bold")
 FONT_MONO = ("Consolas", 10)
+FONT_MONO_SMALL = ("Consolas", 9)
+
+# Sort indicator glyphs used on clickable Treeview column headers.
+_SORT_ASC = " \u25b2"
+_SORT_DESC = " \u25bc"
 
 
 class ScanProgressBar(tk.Canvas):
@@ -92,8 +110,8 @@ class ScanProgressBar(tk.Canvas):
 class ReconApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Network Recon & Exploit Discovery")
-        self.root.geometry("1000x700")
+        self.root.title(f"{APP_NAME} — {APP_TAGLINE}")
+        self.root.geometry("1050x720")
         self.root.minsize(880, 560)
         self.root.configure(bg=BG_DARK)
 
@@ -106,6 +124,13 @@ class ReconApp:
         self.current_errors: list[str] = []
         self.scan_in_progress = False
         self.cancel_event: threading.Event | None = None
+
+        # Per-Treeview sort state/config, keyed by id(tree). Purely a GUI
+        # presentation concern — never touches the underlying data objects
+        # (ServiceInfo / ExploitMatch) or the scores/confidence they carry.
+        self._sort_state: dict[int, dict] = {}
+        self._sort_config: dict[int, dict] = {}
+        self._tree_headings: dict[int, dict] = {}
 
         self._build_style()
         self._build_layout()
@@ -126,11 +151,36 @@ class ReconApp:
         style.configure("Panel.TFrame", background=BG_PANEL)
         style.configure("TLabel", background=BG_DARK, foreground=FG_TEXT, font=FONT_NORMAL)
         style.configure("Header.TLabel", background=BG_DARK, foreground=ACCENT, font=FONT_HEADER)
+        style.configure("Tagline.TLabel", background=BG_DARK, foreground=ACCENT_CYAN, font=FONT_SUBHEADER)
         style.configure("Muted.TLabel", background=BG_DARK, foreground=FG_MUTED, font=FONT_NORMAL)
         style.configure("Panel.TLabel", background=BG_PANEL, foreground=FG_TEXT, font=FONT_NORMAL)
+        style.configure("Section.TLabel", background=BG_DARK, foreground=FG_TEXT, font=FONT_SECTION)
+        style.configure("StatusCard.TLabel", background=BG_PANEL_ALT, foreground=FG_TEXT, font=FONT_NORMAL)
 
-        style.configure("TEntry", fieldbackground=BG_PANEL, foreground=FG_TEXT, insertcolor=FG_TEXT)
-        style.configure("TCombobox", fieldbackground=BG_PANEL, foreground=FG_TEXT)
+        style.configure("TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT,
+                         bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+        style.configure("TCombobox", fieldbackground=BG_INPUT, foreground=FG_TEXT, background=BG_INPUT,
+                         arrowcolor=FG_TEXT, selectbackground=BG_INPUT, selectforeground=FG_TEXT)
+        # 'clam' otherwise swaps in a light system color for the "readonly"
+        # state specifically (our profile dropdown uses state="readonly"),
+        # which is what made the text unreadable against the dark theme.
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", BG_INPUT), ("disabled", BG_PANEL)],
+            foreground=[("readonly", FG_TEXT), ("disabled", FG_MUTED)],
+            background=[("readonly", BG_INPUT), ("active", BG_INPUT)],
+            selectbackground=[("readonly", BG_INPUT)],
+            selectforeground=[("readonly", FG_TEXT)],
+            arrowcolor=[("readonly", FG_TEXT), ("active", ACCENT)],
+        )
+        # The dropdown popup list is a plain Tk Listbox, not a ttk widget,
+        # so it isn't touched by ttk styles at all — set it directly or it
+        # renders with the system's default (light) colors.
+        self.root.option_add("*TCombobox*Listbox.background", BG_INPUT)
+        self.root.option_add("*TCombobox*Listbox.foreground", FG_TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT_DARK)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#0b0b12")
+        self.root.option_add("*TCombobox*Listbox.font", FONT_NORMAL)
 
         style.configure(
             "Accent.TButton",
@@ -161,8 +211,9 @@ class ReconApp:
         style.map("Cancel.TButton", background=[("active", "#4a2c38"), ("disabled", "#33334a")])
 
         style.configure("TNotebook", background=BG_DARK, borderwidth=0)
-        style.configure("TNotebook.Tab", background=BG_PANEL, foreground=FG_MUTED, padding=(12, 6))
-        style.map("TNotebook.Tab", background=[("selected", BG_DARK)], foreground=[("selected", ACCENT)])
+        style.configure("TNotebook.Tab", background=BG_PANEL, foreground=FG_MUTED,
+                         padding=(14, 7), font=("Segoe UI", 9, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", BG_PANEL_ALT)], foreground=[("selected", ACCENT)])
 
         style.configure(
             "Treeview",
@@ -171,9 +222,16 @@ class ReconApp:
             foreground=FG_TEXT,
             rowheight=24,
             borderwidth=0,
+            font=FONT_MONO_SMALL,
         )
-        style.configure("Treeview.Heading", background="#33334a", foreground=ACCENT, font=("Segoe UI", 9, "bold"))
-        style.map("Treeview", background=[("selected", ACCENT_DARK)])
+        style.configure("Treeview.Heading", background="#242837", foreground=ACCENT_CYAN,
+                         font=("Segoe UI", 9, "bold"), relief="flat", padding=(4, 4))
+        style.map("Treeview.Heading", background=[("active", "#2c3145")])
+        style.map("Treeview", background=[("selected", ACCENT_DARK)], foreground=[("selected", "#0b0b12")])
+
+        style.configure("StatusCard.TFrame", background=BG_PANEL_ALT, relief="flat", borderwidth=1)
+
+        style.configure("Filter.TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT)
 
     # -------------------------------------------------------------
     # Layout
@@ -194,7 +252,6 @@ class ReconApp:
         # meant that on shorter screens the notebook silently claimed all
         # available height and the footer — including the export buttons —
         # was pushed off-window and never drawn at all.
-        self._build_disclaimer(outer)
         self._build_status_bar(outer)
         self._build_bottom_bar(outer)
 
@@ -209,12 +266,13 @@ class ReconApp:
         bar.pack(fill="x", pady=(0, 10))
         bar.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(bar, text="Network Recon & Exploit Discovery", style="Header.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 8)
-        )
+        title_row = ttk.Frame(bar)
+        title_row.grid(row=0, column=0, sticky="w", pady=(0, 2))
+        ttk.Label(title_row, text=APP_NAME, style="Header.TLabel").pack(side="left")
+        ttk.Label(title_row, text=f"  {APP_TAGLINE}", style="Tagline.TLabel").pack(side="left", padx=(2, 0), pady=(5, 0))
 
         controls = ttk.Frame(bar)
-        controls.grid(row=1, column=0, sticky="ew")
+        controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         controls.grid_columnconfigure(1, weight=1)  # the target entry absorbs extra/lost width
 
         ttk.Label(controls, text="Target:").grid(row=0, column=0, padx=(0, 4), sticky="w")
@@ -307,6 +365,57 @@ class ReconApp:
         self.host_text.pack(side="left", fill="both", expand=True)
         self.host_text.configure(state="disabled")
 
+    # -------------------------------------------------------------
+    # Generic Treeview column sorting (GUI presentation only — never
+    # touches ExploitMatch/ServiceInfo data or how scores/confidence
+    # are calculated; it only reorders what's already displayed).
+    # -------------------------------------------------------------
+    def _register_sortable_columns(self, tree: ttk.Treeview, columns_config: dict):
+        """
+        columns_config: {col_id: (heading_text, numeric, order_map_or_None)}
+        Wires each heading to toggle-sort on click and remembers the base
+        heading text so a sort indicator (▲/▼) can be appended/removed.
+        """
+        self._sort_config[id(tree)] = columns_config
+        self._tree_headings[id(tree)] = {col: text for col, (text, _n, _o) in columns_config.items()}
+        for col, (text, numeric, order_map) in columns_config.items():
+            tree.heading(col, text=text, command=lambda c=col: self._on_sort_column(tree, c))
+
+    def _on_sort_column(self, tree: ttk.Treeview, col: str):
+        state = self._sort_state.setdefault(id(tree), {"col": None, "reverse": False})
+        reverse = (not state["reverse"]) if state["col"] == col else False
+        _text, numeric, order_map = self._sort_config[id(tree)][col]
+        self._do_sort(tree, col, reverse, numeric, order_map)
+
+    def _apply_default_sort(self, tree: ttk.Treeview, col: str, reverse: bool):
+        _text, numeric, order_map = self._sort_config[id(tree)][col]
+        self._do_sort(tree, col, reverse, numeric, order_map)
+
+    def _do_sort(self, tree: ttk.Treeview, col: str, reverse: bool, numeric: bool, order_map: dict | None):
+        def keyfunc(item):
+            value = tree.set(item, col)
+            if order_map is not None:
+                return order_map.get(value, len(order_map) + 1)
+            if numeric:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return float("-inf")
+            return value.lower()
+
+        items = list(tree.get_children(""))
+        items.sort(key=keyfunc, reverse=reverse)
+        for index, item in enumerate(items):
+            tree.move(item, "", index)
+
+        self._sort_state[id(tree)] = {"col": col, "reverse": reverse}
+        headings = self._tree_headings[id(tree)]
+        for c, base_text in headings.items():
+            if c == col:
+                tree.heading(c, text=base_text + (_SORT_DESC if reverse else _SORT_ASC))
+            else:
+                tree.heading(c, text=base_text)
+
     def _build_ports_tab(self):
         # Fixed heights here are deliberately modest (rather than tall
         # enough to always avoid scrolling) so this tab -- and therefore
@@ -324,8 +433,15 @@ class ReconApp:
         }
         widths = {"port": 55, "protocol": 55, "state": 70, "service": 90, "product_version": 340, "conf": 70}
         for col in columns:
-            self.ports_tree.heading(col, text=headings[col])
             self.ports_tree.column(col, width=widths[col], anchor="w")
+        self._register_sortable_columns(self.ports_tree, {
+            "port": (headings["port"], True, None),
+            "protocol": (headings["protocol"], False, None),
+            "state": (headings["state"], False, None),
+            "service": (headings["service"], False, None),
+            "product_version": (headings["product_version"], False, None),
+            "conf": (headings["conf"], True, None),
+        })
         tree_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.ports_tree.yview)
         self.ports_tree.configure(yscrollcommand=tree_scrollbar.set)
         tree_scrollbar.pack(side="right", fill="y")
@@ -358,6 +474,16 @@ class ReconApp:
         self.script_text.configure(state="disabled")
 
     def _build_findings_tab(self):
+        filter_bar = ttk.Frame(self.tab_findings)
+        filter_bar.pack(fill="x", side="top", pady=(0, 6))
+        ttk.Label(filter_bar, text="Severity:").pack(side="left", padx=(0, 6))
+        self.findings_filter_var = tk.StringVar(value="ALL")
+        for level in ("ALL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            ttk.Radiobutton(
+                filter_bar, text=level, value=level, variable=self.findings_filter_var,
+                command=self._apply_findings_filter,
+            ).pack(side="left", padx=(0, 8))
+
         container = ttk.Frame(self.tab_findings)
         container.pack(fill="both", expand=True)
         self.findings_text = tk.Text(
@@ -371,16 +497,30 @@ class ReconApp:
         self.findings_text.configure(state="disabled")
 
     def _build_exploits_tab(self):
+        filter_bar = ttk.Frame(self.tab_exploits)
+        filter_bar.pack(fill="x", side="top", pady=(0, 6))
+        ttk.Label(filter_bar, text="Filter exploits:").pack(side="left", padx=(0, 6))
+        self.exploit_filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(filter_bar, textvariable=self.exploit_filter_var, style="Filter.TEntry")
+        filter_entry.pack(side="left", fill="x", expand=True)
+        self.exploit_filter_var.trace_add("write", lambda *_: self._apply_exploit_filter())
+
         tree_frame = ttk.Frame(self.tab_exploits)
         tree_frame.pack(fill="both", expand=True, side="top")
 
         columns = ("port", "edb_id", "title", "confidence", "score")
         self.exploit_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=6)
         headings = {"port": "Port", "edb_id": "EDB-ID", "title": "Title", "confidence": "Confidence", "score": "Score"}
-        widths = {"port": 50, "edb_id": 70, "title": 460, "confidence": 90, "score": 60}
+        widths = {"port": 50, "edb_id": 70, "title": 420, "confidence": 90, "score": 60}
         for col in columns:
-            self.exploit_tree.heading(col, text=headings[col])
             self.exploit_tree.column(col, width=widths[col], anchor="w")
+        self._register_sortable_columns(self.exploit_tree, {
+            "port": (headings["port"], True, None),
+            "edb_id": (headings["edb_id"], True, None),
+            "title": (headings["title"], False, None),
+            "confidence": (headings["confidence"], False, {"High": 0, "Medium": 1, "Low": 2}),
+            "score": (headings["score"], True, None),
+        })
         tree_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.exploit_tree.yview)
         self.exploit_tree.configure(yscrollcommand=tree_scrollbar.set)
         tree_scrollbar.pack(side="right", fill="y")
@@ -430,15 +570,6 @@ class ReconApp:
         self.status_var = tk.StringVar(value="Ready.")
         status = ttk.Label(parent, textvariable=self.status_var, style="Muted.TLabel")
         status.pack(side="bottom", fill="x")
-
-    def _build_disclaimer(self, parent):
-        # Small, subtle scope disclaimer — always visible, never intrusive.
-        ttk.Label(
-            parent,
-            text="Authorized testing only \u2022 Exploit matches are leads, not confirmed vulnerabilities",
-            style="Muted.TLabel",
-            font=("Segoe UI", 8),
-        ).pack(side="bottom", fill="x", pady=(2, 0))
 
     # -------------------------------------------------------------
     # Environment panel
@@ -605,6 +736,10 @@ class ReconApp:
             widget.configure(state="disabled")
         self.exploit_detail_var.set("Select an exploit above to see details.")
         self.open_exploit_btn.configure(state="disabled")
+        self._current_findings = []
+        self._exploit_by_row = {}
+        self.exploit_filter_var.set("")
+        self.findings_filter_var.set("ALL")
 
     def _render_results(self):
         host = self.current_host
@@ -649,25 +784,61 @@ class ReconApp:
                 "", "end", values=(s.port, s.protocol, s.state, s.service_name or "-", product_version, s.conf or "-")
             )
             self._service_by_row[row_id] = s
+        # Default presentation order: port ascending (purely a display
+        # ordering choice — Nmap's own results are untouched).
+        self._apply_default_sort(self.ports_tree, "port", reverse=False)
 
         # --- Security Findings tab ---
-        findings = _security_observations(host)
-        self._set_text(self.findings_text, "\n\n".join(findings))
+        self._current_findings = _security_observations(host)
+        self.findings_filter_var.set("ALL")
+        self._apply_findings_filter()
 
         # --- Exploit Discovery tab ---
-        self._exploit_by_row = {}
         if not self.current_exploitdb_available:
             self.exploit_detail_var.set("Exploit-DB index unavailable for this scan — set a valid CSV path above.")
         elif not self.current_matches:
             self.exploit_detail_var.set("No potentially applicable exploits found for the detected services.")
+        self.exploit_filter_var.set("")
+        self._apply_exploit_filter()
+
+    def _apply_exploit_filter(self):
+        """
+        GUI-only filter over the already-computed self.current_matches.
+        Never mutates ExploitMatch data — only changes which rows are
+        currently shown in the Treeview.
+        """
+        for row in self.exploit_tree.get_children():
+            self.exploit_tree.delete(row)
+        self._exploit_by_row = {}
+
+        query = self.exploit_filter_var.get().strip().lower()
+        for m in self.current_matches:
+            haystack = " ".join([
+                m.edb_id, m.title, m.matched_product, m.matched_version,
+                m.platform, m.exploit_type,
+            ]).lower()
+            if query and query not in haystack:
+                continue
+            row_id = self.exploit_tree.insert(
+                "", "end",
+                values=(m.matched_service_port, m.edb_id, m.title, m.confidence, m.score),
+                tags=(m.confidence,),
+            )
+            self._exploit_by_row[row_id] = m
+
+        # Default presentation order: score highest to lowest (display
+        # ordering only — the scores themselves come from exploits.py).
+        self._apply_default_sort(self.exploit_tree, "score", reverse=True)
+
+    def _apply_findings_filter(self):
+        """GUI-only severity filter over the already-computed findings list."""
+        severity = self.findings_filter_var.get()
+        findings = getattr(self, "_current_findings", [])
+        if severity == "ALL":
+            shown = findings
         else:
-            for m in self.current_matches:
-                row_id = self.exploit_tree.insert(
-                    "", "end",
-                    values=(m.matched_service_port, m.edb_id, m.title, m.confidence, m.score),
-                    tags=(m.confidence,),
-                )
-                self._exploit_by_row[row_id] = m
+            shown = [f for f in findings if f.strip().upper().startswith(f"[{severity}]")]
+        self._set_text(self.findings_text, "\n\n".join(shown) if shown else "No findings match this filter.")
 
     def _set_text(self, widget: tk.Text, content: str):
         widget.configure(state="normal")
