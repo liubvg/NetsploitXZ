@@ -1,10 +1,3 @@
-"""
-gui.py — the whole Tkinter window. Uses ttk for a cleaner look than raw
-tk widgets, a simple worker-thread + queue pattern so the UI never
-freezes during a scan, and a Treeview-based layout so results read like
-a real tool's output instead of a stack of loose buttons.
-"""
-
 from __future__ import annotations
 
 import queue
@@ -25,8 +18,8 @@ APP_NAME = "NetSploitXZ"
 APP_TAGLINE = "Network Reconnaissance & Exploit Discovery"
 
 # ---------------------------------------------------------------------
-# Color / style constants — one place to tweak the look of the whole app.
-# Dark, restrained "Kali-style" security-tool palette: near-black
+# color / style constants, one place to tweak the look of the whole app.
+# dark, restrained "kali-style" security-tool palette: near-black
 # background, slightly lighter charcoal panels, a muted green/cyan
 # accent, and status colors reserved for High/Medium/Low/Info meaning.
 # ---------------------------------------------------------------------
@@ -51,19 +44,17 @@ FONT_SECTION = ("Segoe UI", 10, "bold")
 FONT_MONO = ("Consolas", 10)
 FONT_MONO_SMALL = ("Consolas", 9)
 
-# Sort indicator glyphs used on clickable Treeview column headers.
+# sort indicator glyphs used on clickable treeview column headers
 _SORT_ASC = " \u25b2"
 _SORT_DESC = " \u25bc"
 
 
 class ScanProgressBar(tk.Canvas):
-    """
-    A small, self-contained "marquee" progress indicator: a single bar
-    that sweeps left to right and wraps around, redrawn on a timer.
-    Used instead of ttk's built-in indeterminate Progressbar, whose
-    default look on most themes is a short block bouncing back and
-    forth rather than a smooth continuous sweep.
-    """
+    # small self-contained "marquee" progress indicator: a single bar
+    # that sweeps left to right and wraps around, redrawn on a timer.
+    # used instead of ttk's built-in indeterminate Progressbar, whose
+    # default look on most themes is a short block bouncing back and
+    # forth rather than a smooth continuous sweep.
 
     def __init__(self, parent, height: int = 6, **kwargs):
         super().__init__(parent, height=height, bg=BG_PANEL, highlightthickness=0, **kwargs)
@@ -125,8 +116,8 @@ class ReconApp:
         self.scan_in_progress = False
         self.cancel_event: threading.Event | None = None
 
-        # Per-Treeview sort state/config, keyed by id(tree). Purely a GUI
-        # presentation concern — never touches the underlying data objects
+        # per-treeview sort state/config, keyed by id(tree). purely a gui
+        # presentation concern, never touches the underlying data objects
         # (ServiceInfo / ExploitMatch) or the scores/confidence they carry.
         self._sort_state: dict[int, dict] = {}
         self._sort_config: dict[int, dict] = {}
@@ -137,13 +128,13 @@ class ReconApp:
         self._refresh_environment_panel()
 
     # -------------------------------------------------------------
-    # Styling
+    # styling
     # -------------------------------------------------------------
     def _build_style(self):
         style = ttk.Style()
         # 'clam' is the only built-in ttk theme that reliably accepts
-        # custom colors across platforms (Windows' default theme ignores
-        # background overrides on several widgets).
+        # custom colors across platforms (windows' default theme ignores
+        # background overrides on several widgets)
         style.theme_use("clam")
 
         style.configure(".", background=BG_DARK, foreground=FG_TEXT, font=FONT_NORMAL)
@@ -163,7 +154,7 @@ class ReconApp:
                          arrowcolor=FG_TEXT, selectbackground=BG_INPUT, selectforeground=FG_TEXT)
         # 'clam' otherwise swaps in a light system color for the "readonly"
         # state specifically (our profile dropdown uses state="readonly"),
-        # which is what made the text unreadable against the dark theme.
+        # which made the text unreadable against the dark theme
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", BG_INPUT), ("disabled", BG_PANEL)],
@@ -173,9 +164,9 @@ class ReconApp:
             selectforeground=[("readonly", FG_TEXT)],
             arrowcolor=[("readonly", FG_TEXT), ("active", ACCENT)],
         )
-        # The dropdown popup list is a plain Tk Listbox, not a ttk widget,
-        # so it isn't touched by ttk styles at all — set it directly or it
-        # renders with the system's default (light) colors.
+        # the dropdown popup list is a plain tk Listbox, not a ttk widget,
+        # so it isn't touched by ttk styles at all, set it directly or it
+        # renders with the system's default (light) colors
         self.root.option_add("*TCombobox*Listbox.background", BG_INPUT)
         self.root.option_add("*TCombobox*Listbox.foreground", FG_TEXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT_DARK)
@@ -234,7 +225,7 @@ class ReconApp:
         style.configure("Filter.TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT)
 
     # -------------------------------------------------------------
-    # Layout
+    # layout
     # -------------------------------------------------------------
     def _build_layout(self):
         outer = ttk.Frame(self.root, padding=14)
@@ -244,24 +235,24 @@ class ReconApp:
         self._build_env_strip(outer)
         self._build_progress_strip(outer)
 
-        # IMPORTANT: the footer (disclaimer, status line, export buttons)
-        # is packed with side="bottom" BEFORE the notebook, in bottom-to-top
-        # order. This reserves its space from the bottom of the window
-        # first, regardless of how much room the notebook's content wants.
-        # Packing it AFTER an expand=True notebook (the previous approach)
-        # meant that on shorter screens the notebook silently claimed all
-        # available height and the footer — including the export buttons —
-        # was pushed off-window and never drawn at all.
+        # the footer (disclaimer, status line, export buttons) is packed
+        # with side="bottom" before the notebook, in bottom-to-top order.
+        # this reserves its space from the bottom of the window first,
+        # regardless of how much room the notebook's content wants.
+        # packing it after an expand=True notebook meant that on shorter
+        # screens the notebook silently claimed all available height and
+        # the footer (including the export buttons) got pushed off-window
+        # and never drawn at all.
         self._build_status_bar(outer)
         self._build_bottom_bar(outer)
 
         self._build_notebook(outer)
 
     def _build_top_bar(self, parent):
-        # Title on its own row, controls on the row below — this way the
-        # controls never get squeezed against the title text at narrower
-        # window widths, and the target field is the one thing that
-        # stretches/shrinks so the buttons next to it are never clipped.
+        # title on its own row, controls on the row below, so the controls
+        # never get squeezed against the title text at narrower window
+        # widths, and the target field is the one thing that stretches/
+        # shrinks so the buttons next to it are never clipped
         bar = ttk.Frame(parent)
         bar.pack(fill="x", pady=(0, 10))
         bar.grid_columnconfigure(0, weight=1)
@@ -298,9 +289,9 @@ class ReconApp:
         self.cancel_button.grid(row=0, column=5, sticky="e")
 
     def _build_env_strip(self, parent):
-        # Laid out as a 2x2 grid of status labels (rather than one long
-        # row) plus the CSV button, so this strip stays a fixed, modest
-        # width and doesn't get clipped at the window's minimum size.
+        # laid out as a 2x2 grid of status labels (rather than one long
+        # row) plus the csv button, so this strip stays a fixed, modest
+        # width and doesn't get clipped at the window's minimum size
         self.env_frame = ttk.Frame(parent, style="Panel.TFrame", padding=8)
         self.env_frame.pack(fill="x", pady=(0, 10))
         self.env_frame.grid_columnconfigure(0, weight=1)
@@ -323,15 +314,15 @@ class ReconApp:
         set_csv_btn.grid(row=0, column=1, padx=(12, 0), sticky="ne")
 
     def _build_progress_strip(self, parent):
-        # A small custom canvas "marquee" bar instead of ttk's default
+        # a small custom canvas "marquee" bar instead of ttk's default
         # indeterminate Progressbar. ttk's default indeterminate style
         # renders as a short block bouncing back and forth, which reads
-        # as choppy/low-quality; this sweeps one continuous direction
-        # and wraps, which looks like a normal modern loading indicator.
+        # as choppy; this sweeps one continuous direction and wraps,
+        # which looks like a normal loading indicator.
         self.progress_frame = ttk.Frame(parent)
         self.progress_bar = ScanProgressBar(self.progress_frame, height=6)
         self.progress_bar.pack(fill="x")
-        # Not packed into parent yet — shown/hidden in _set_scanning_state().
+        # not packed into parent yet, shown/hidden in _set_scanning_state()
 
     def _build_notebook(self, parent):
         self.notebook = ttk.Notebook(parent)
@@ -366,16 +357,14 @@ class ReconApp:
         self.host_text.configure(state="disabled")
 
     # -------------------------------------------------------------
-    # Generic Treeview column sorting (GUI presentation only — never
+    # generic treeview column sorting (gui presentation only, never
     # touches ExploitMatch/ServiceInfo data or how scores/confidence
-    # are calculated; it only reorders what's already displayed).
+    # are calculated; it only reorders what's already displayed)
     # -------------------------------------------------------------
     def _register_sortable_columns(self, tree: ttk.Treeview, columns_config: dict):
-        """
-        columns_config: {col_id: (heading_text, numeric, order_map_or_None)}
-        Wires each heading to toggle-sort on click and remembers the base
-        heading text so a sort indicator (▲/▼) can be appended/removed.
-        """
+        # columns_config: {col_id: (heading_text, numeric, order_map_or_None)}
+        # wires each heading to toggle-sort on click and remembers the base
+        # heading text so a sort indicator (▲/▼) can be appended/removed
         self._sort_config[id(tree)] = columns_config
         self._tree_headings[id(tree)] = {col: text for col, (text, _n, _o) in columns_config.items()}
         for col, (text, numeric, order_map) in columns_config.items():
@@ -417,9 +406,9 @@ class ReconApp:
                 tree.heading(c, text=base_text)
 
     def _build_ports_tab(self):
-        # Fixed heights here are deliberately modest (rather than tall
-        # enough to always avoid scrolling) so this tab -- and therefore
-        # the whole window -- keeps working on shorter screens. Every
+        # fixed heights here are deliberately modest (rather than tall
+        # enough to always avoid scrolling) so this tab, and therefore
+        # the whole window, keeps working on shorter screens. every
         # scrollable widget below has its own scrollbar, so nothing
         # becomes inaccessible just because it doesn't all fit at once.
         tree_frame = ttk.Frame(self.tab_ports)
@@ -448,7 +437,7 @@ class ReconApp:
         self.ports_tree.pack(side="left", fill="both", expand=True)
         self.ports_tree.bind("<<TreeviewSelect>>", self._on_port_select)
 
-        # Details panel shown when a port is selected: service fields + CPE.
+        # details panel shown when a port is selected: service fields + CPE
         detail_frame = ttk.Frame(self.tab_ports)
         detail_frame.pack(fill="x", side="top", pady=(8, 0))
         self.port_detail_text = tk.Text(
@@ -538,8 +527,8 @@ class ReconApp:
             detail_frame, textvariable=self.exploit_detail_var, style="Panel.TLabel", justify="left"
         )
         exploit_detail_label.pack(side="left", fill="x", expand=True)
-        # Rewrap the text to the label's actual current width instead of a
-        # fixed guess, so it reads correctly at any window size.
+        # rewrap the text to the label's actual current width instead of a
+        # fixed guess, so it reads correctly at any window size
         exploit_detail_label.bind(
             "<Configure>", lambda event: exploit_detail_label.configure(wraplength=max(200, event.width - 10))
         )
@@ -572,7 +561,7 @@ class ReconApp:
         status.pack(side="bottom", fill="x")
 
     # -------------------------------------------------------------
-    # Environment panel
+    # environment panel
     # -------------------------------------------------------------
     def _refresh_environment_panel(self):
         report = run_environment_check()
@@ -602,7 +591,7 @@ class ReconApp:
             self.status_var.set(f"Exploit-DB CSV set to: {path}")
 
     # -------------------------------------------------------------
-    # Scan lifecycle
+    # scan lifecycle
     # -------------------------------------------------------------
     def _on_start_scan(self):
         if self.scan_in_progress:
@@ -662,13 +651,13 @@ class ReconApp:
             self.progress_frame.pack_forget()
 
     def _run_scan_worker(self, target: str, profile_name: str, cancel_event: threading.Event):
-        """
-        Runs entirely in a background thread. Never touches Tkinter widgets directly.
-        Wrapped in a broad try/except: if anything unexpected raises here, the thread
-        must still report back on result_queue -- otherwise _poll_queue would wait
-        forever for an item that never arrives and the GUI would look stuck on
-        "Scanning..." with no error and no way to recover except restarting the app.
-        """
+        # runs entirely in a background thread, never touches tkinter
+        # widgets directly. wrapped in a broad try/except: if anything
+        # unexpected raises here, the thread must still report back on
+        # result_queue, otherwise _poll_queue would wait forever for an
+        # item that never arrives and the GUI would look stuck on
+        # "Scanning..." with no error and no way to recover except
+        # restarting the app.
         try:
             errors: list[str] = []
             host, err = scan_target(target, profile_name, cancel_event=cancel_event)
@@ -688,7 +677,7 @@ class ReconApp:
                     matches = correlate_all_services(host.services, entries)
 
             self.result_queue.put(("done", (host, matches, exploitdb_available, errors, profile_name)))
-        except Exception as exc:  # noqa: BLE001 -- last-resort safety net, see docstring
+        except Exception as exc:  # noqa: BLE001 -- last-resort safety net, see comment above
             self.result_queue.put(("error", f"Unexpected error during scan: {exc}"))
 
     def _poll_queue(self):
@@ -724,7 +713,7 @@ class ReconApp:
         self.status_var.set(f"Scan complete for {host.ip_address or host.target_input}.")
 
     # -------------------------------------------------------------
-    # Rendering results
+    # rendering results
     # -------------------------------------------------------------
     def _clear_results(self):
         for tree in (self.ports_tree, self.exploit_tree):
@@ -784,8 +773,8 @@ class ReconApp:
                 "", "end", values=(s.port, s.protocol, s.state, s.service_name or "-", product_version, s.conf or "-")
             )
             self._service_by_row[row_id] = s
-        # Default presentation order: port ascending (purely a display
-        # ordering choice — Nmap's own results are untouched).
+        # default presentation order: port ascending (display ordering
+        # choice only, Nmap's own results are untouched)
         self._apply_default_sort(self.ports_tree, "port", reverse=False)
 
         # --- Security Findings tab ---
@@ -802,11 +791,9 @@ class ReconApp:
         self._apply_exploit_filter()
 
     def _apply_exploit_filter(self):
-        """
-        GUI-only filter over the already-computed self.current_matches.
-        Never mutates ExploitMatch data — only changes which rows are
-        currently shown in the Treeview.
-        """
+        # gui-only filter over the already-computed self.current_matches.
+        # never mutates ExploitMatch data, only changes which rows are
+        # currently shown in the treeview.
         for row in self.exploit_tree.get_children():
             self.exploit_tree.delete(row)
         self._exploit_by_row = {}
@@ -826,12 +813,12 @@ class ReconApp:
             )
             self._exploit_by_row[row_id] = m
 
-        # Default presentation order: score highest to lowest (display
-        # ordering only — the scores themselves come from exploits.py).
+        # default presentation order: score highest to lowest (display
+        # ordering only, the scores themselves come from exploits.py)
         self._apply_default_sort(self.exploit_tree, "score", reverse=True)
 
     def _apply_findings_filter(self):
-        """GUI-only severity filter over the already-computed findings list."""
+        # gui-only severity filter over the already-computed findings list
         severity = self.findings_filter_var.get()
         findings = getattr(self, "_current_findings", [])
         if severity == "ALL":
@@ -895,7 +882,7 @@ class ReconApp:
             webbrowser.open(self._selected_exploit_url)
 
     # -------------------------------------------------------------
-    # Export
+    # export
     # -------------------------------------------------------------
     def _on_export_report(self, fmt: str):
         if not self.current_host:

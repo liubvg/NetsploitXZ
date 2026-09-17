@@ -1,18 +1,11 @@
-"""
-config.py — settings, scan profiles, and constants used across the app.
-
-Kept deliberately simple: a small JSON settings file (stdlib json + pathlib),
-no config framework.
-"""
-
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-# Where we remember small settings between runs (e.g. path to the
-# exploitdb CSV you selected last time).
+# where we remember small settings between runs (e.g. path to the
+# exploitdb csv picked last time)
 APP_DIR = Path.home() / ".ehpt_recon_tool"
 SETTINGS_FILE = APP_DIR / "settings.json"
 
@@ -20,8 +13,8 @@ DEFAULT_REPORTS_DIR = Path.cwd() / "reports"
 
 EXPLOITDB_CSV_FILENAME = "files_exploits.csv"
 
-# Scan profiles: name -> extra nmap arguments (added on top of the base
-# -sV -oX - flags that are always used).
+# scan profiles: name -> extra nmap args (added on top of the base
+# -sV -oX - flags that are always used)
 SCAN_PROFILES = {
     "Quick": {
         "description": "Fast scan of top 100 ports, version detection only.",
@@ -51,9 +44,9 @@ SCAN_PROFILES = {
         "description": (
             "Everything: all 65535 TCP ports, top 100 UDP ports, version detection, "
             "OS detection, and default Nmap scripts (-sC) for extra service info. "
-            "Slowest option — can take a long time depending on the target."
+            "Slowest option, can take a long time depending on the target."
         ),
-        "args": ["-p", "T:1-65535,U:1-100"],  # TCP all ports + top UDP ports, combined syntax
+        "args": ["-p", "T:1-65535,U:1-100"],  # TCP all ports + top UDP ports
         "os_detection": True,
         "script_scan": True,
         "udp": True,

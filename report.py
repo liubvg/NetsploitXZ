@@ -1,13 +1,3 @@
-"""
-report.py — builds the report from a HostInfo + list of ExploitMatch.
-
-generate_report()      -> plain-text report (existing feature, kept working)
-generate_html_report()  -> new formatted HTML report (self-contained, stdlib only)
-
-Both call the same _security_observations() / _summary_counts() helpers so
-the two formats never disagree with each other.
-"""
-
 from __future__ import annotations
 
 import html
@@ -24,15 +14,14 @@ REPORT_SUBTITLE = "NETWORK RECONNAISSANCE & EXPLOIT DISCOVERY"
 
 
 # ---------------------------------------------------------------------
-# Shared logic (used by both TXT and HTML reports)
+# shared logic (used by both TXT and HTML reports)
 # ---------------------------------------------------------------------
 
 def _security_observations(host: HostInfo) -> list[str]:
-    """
-    Simple, explainable heuristics -- not a vulnerability scanner.
-    Flags things worth a human looking at, nothing more. Each observation
-    is a plain string starting with a severity tag, e.g. "[HIGH] ...".
-    """
+    # simple, explainable heuristics, not a vulnerability scanner.
+    # flags things worth a human looking at, nothing more. each
+    # observation is a plain string starting with a severity tag,
+    # e.g. "[HIGH] ...".
     observations: list[str] = []
     open_services = [s for s in host.services if s.state == "open"]
 
@@ -104,7 +93,7 @@ def _summary_counts(host: HostInfo, exploit_matches: list[ExploitMatch]) -> dict
 
 
 # ---------------------------------------------------------------------
-# TXT report (existing feature, kept working)
+# TXT report
 # ---------------------------------------------------------------------
 
 def generate_report(
@@ -244,8 +233,8 @@ def generate_report(
 
 
 # ---------------------------------------------------------------------
-# HTML report — self-contained single file, stdlib only (html.escape()
-# for every piece of dynamic text; no template engine, no JS framework)
+# HTML report - self-contained single file, stdlib only (html.escape()
+# for every piece of dynamic text, no template engine, no JS framework)
 # ---------------------------------------------------------------------
 
 _HTML_CSS = """
@@ -394,9 +383,9 @@ def generate_html_report(
 
     parts.append("<h2>Security Observations</h2>")
     for obs in _security_observations(host):
-        # Observations normally start with a "[SEVERITY]" tag; the one
+        # observations normally start with a "[SEVERITY]" tag; the one
         # exception is the "no observations" fallback message, which has
-        # no tag at all and should just be shown as plain text.
+        # no tag at all and should just be shown as plain text
         if obs.startswith("[") and "]" in obs:
             tag_end = obs.find("]") + 1
             tag, rest = obs[:tag_end], obs[tag_end:]

@@ -200,9 +200,9 @@ NetsploitXZ/
 
 ## Limitations
 
-The exploit discovery system is based on heuristic matching and is not a complete vulnerability scanner.
+The exploit discovery system is based on  matching and is not a complete vulnerability scanner.
 
-A matching Exploit-DB entry does not confirm that a target is vulnerable. Results should be manually reviewed.
+A matching Exploit-DB entry does not confirm that a target is definately vulnerable. Results should be manually reviewed.
 
 OS detection, SYN scans, and UDP scans may require Administrator/root privileges for complete results.
 

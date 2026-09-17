@@ -1,15 +1,3 @@
-"""
-nmap_scan.py — Phase 2 & 3: runs Nmap via subprocess and parses its XML
-output into plain dataclasses using xml.etree.ElementTree (stdlib only,
-no python-nmap wrapper).
-
-Flow: build command -> run subprocess -> capture XML string -> parse XML
-
-Uses subprocess.Popen (rather than subprocess.run) so a long-running scan
-can be cancelled cleanly from the GUI without leaving an orphan nmap
-process behind.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -24,13 +12,13 @@ from config import SCAN_PROFILES
 
 
 # ---------------------------------------------------------------------
-# Data model (kept here rather than a separate models.py, since these
+# data model (kept here rather than a separate models.py since these
 # classes only exist to describe what nmap_scan.py produces)
 # ---------------------------------------------------------------------
 
 @dataclass
 class ScriptResult:
-    """Output from an individual Nmap script (only populated when -sC is used)."""
+    # output from an individual nmap script (only populated when -sC is used)
     script_id: str
     output: str
 
@@ -47,8 +35,8 @@ class ServiceInfo:
     tunnel: str = ""             # e.g. "ssl" for https-over-ssl detection
     method: str = ""             # how nmap determined the service: "probed" or "table"
     conf: str = ""                # nmap's confidence (1-10) in the service ID itself
-    cpe: list[str] = field(default_factory=list)   # Common Platform Enumeration strings, if present
-    scripts: list[ScriptResult] = field(default_factory=list)  # -sC script output for this port
+    cpe: list[str] = field(default_factory=list)   # CPE strings, if present
+    scripts: list[ScriptResult] = field(default_factory=list)  # -sC output for this port
 
 
 @dataclass
@@ -65,9 +53,9 @@ class HostInfo:
     last_boot: str = ""
     distance_hops: str = ""        # network hops away, if nmap reports it
     services: list[ServiceInfo] = field(default_factory=list)
-    host_scripts: list[ScriptResult] = field(default_factory=list)  # host-level -sC output (not tied to a port)
+    host_scripts: list[ScriptResult] = field(default_factory=list)  # host-level -sC output
     warnings: list[str] = field(default_factory=list)
-    # Scan metadata (filled in by scan_target, not by the XML parser itself)
+    # scan metadata (filled in by scan_target, not by the XML parser itself)
     nmap_command: str = ""          # the actual nmap command line that was run
     scan_started: str = ""
     scan_completed: str = ""
@@ -75,10 +63,8 @@ class HostInfo:
 
 
 def build_nmap_command(target: str, profile_name: str) -> tuple[list[str], str | None]:
-    """
-    Builds the nmap argument list for the given target/profile.
-    Returns (command, error_message) — error_message is set if nmap isn't found.
-    """
+    # builds the nmap argument list for the given target/profile.
+    # returns (command, error_message), error_message set if nmap isn't found.
     nmap_path = shutil.which("nmap")
     if not nmap_path:
         return [], "Nmap executable not found on PATH."
@@ -90,17 +76,17 @@ def build_nmap_command(target: str, profile_name: str) -> tuple[list[str], str |
         cmd.append("-O")
     if profile.get("udp"):
         # -sS = TCP SYN scan, -sU = UDP scan, combined so the "T:"/"U:"
-        # port syntax in the profile's args is interpreted correctly.
+        # port syntax in the profile's args is interpreted correctly
         cmd += ["-sS", "-sU"]
     if profile.get("script_scan"):
-        cmd.append("-sC")  # run Nmap's default (safe) script set for extra banner/info detail
+        cmd.append("-sC")  # run nmap's default (safe) script set for extra banner/info detail
     cmd += profile["args"]
     cmd += ["-T4", "-oX", "-", target]
     return cmd, None
 
 
 # ---------------------------------------------------------------------
-# Step 1: run nmap, capture XML
+# step 1: run nmap, capture xml
 # ---------------------------------------------------------------------
 
 def run_nmap(
@@ -108,17 +94,15 @@ def run_nmap(
     profile_name: str,
     cancel_event: "threading.Event | None" = None,
 ) -> tuple[str | None, str | None, list[str]]:
-    """
-    Runs nmap against `target` using the given scan profile.
-    Returns (xml_output, error_message, command) — exactly one of
-    xml_output/error_message is set. `command` is the actual argument
-    list used, so callers/reports can show what was run.
-
-    `cancel_event` is an optional threading.Event. If it becomes set
-    while nmap is running, the process is terminated and (None,
-    "Scan cancelled by user.", command) is returned. No orphan nmap
-    process is left behind either way.
-    """
+    # runs nmap against `target` using the given scan profile.
+    # returns (xml_output, error_message, command), exactly one of
+    # xml_output/error_message is set. `command` is the actual argument
+    # list used, so callers/reports can show what was run.
+    #
+    # `cancel_event` is an optional threading.Event. if it becomes set
+    # while nmap is running, the process is terminated and (None,
+    # "Scan cancelled by user.", command) is returned. no orphan nmap
+    # process is left behind either way.
     cmd, error = build_nmap_command(target, profile_name)
     if error:
         return None, error, []
@@ -133,10 +117,10 @@ def run_nmap(
     except OSError as exc:
         return None, f"Failed to start nmap: {exc}", cmd
 
-    # IMPORTANT: nmap's XML output can be larger than the OS pipe buffer
-    # (a few tens of KB). If we only poll process.poll() without reading
-    # the pipes, nmap blocks trying to write and the scan hangs forever
-    # once the buffer fills. So a background thread drains both pipes via
+    # nmap's xml output can be larger than the OS pipe buffer (a few tens
+    # of KB). if we only poll process.poll() without reading the pipes,
+    # nmap blocks trying to write and the scan hangs forever once the
+    # buffer fills. so a background thread drains both pipes via
     # communicate() while this loop just watches for cancel/timeout.
     result_holder: dict = {}
 
@@ -168,22 +152,21 @@ def run_nmap(
     stderr = result_holder.get("stderr", "") or ""
 
     if process.returncode != 0 and not stdout:
-        # Nmap sometimes still returns useful stdout even with warnings on stderr,
-        # so only treat it as a hard failure if we got no XML at all.
+        # nmap sometimes still returns useful stdout even with warnings on
+        # stderr, so only treat it as a hard failure if we got no xml at all
         return None, f"Nmap exited with an error: {stderr.strip() or 'unknown error'}", cmd
 
     return stdout, None, cmd
 
 
 # ---------------------------------------------------------------------
-# Step 2: parse nmap's XML into HostInfo/ServiceInfo
+# step 2: parse nmap's xml into HostInfo/ServiceInfo
 # ---------------------------------------------------------------------
 
 def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
-    """
-    Parses a single-host nmap XML report. If nmap scanned multiple hosts
-    (shouldn't happen for our single-target use case) only the first is used.
-    """
+    # parses a single-host nmap xml report. if nmap scanned multiple
+    # hosts (shouldn't happen for our single-target use case) only the
+    # first is used.
     host_info = HostInfo(target_input=target_input)
 
     try:
@@ -197,12 +180,12 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
         host_info.warnings.append("Nmap reported no host data (target may be unreachable).")
         return host_info
 
-    # Host state (up/down)
+    # host state (up/down)
     status_el = host_el.find("status")
     if status_el is not None:
         host_info.state = status_el.get("state", "unknown")
 
-    # Addresses (IPv4/IPv6 + MAC if the target is on the local network)
+    # addresses (ipv4/ipv6 + mac if the target is on the local network)
     for addr_el in host_el.findall("address"):
         addrtype = addr_el.get("addrtype")
         if addrtype in ("ipv4", "ipv6"):
@@ -211,14 +194,14 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
             host_info.mac_address = addr_el.get("addr", "")
             host_info.mac_vendor = addr_el.get("vendor", "")
 
-    # Hostname
+    # hostname
     hostnames_el = host_el.find("hostnames")
     if hostnames_el is not None:
         hostname_el = hostnames_el.find("hostname")
         if hostname_el is not None:
             host_info.hostname = hostname_el.get("name", "")
 
-    # Uptime / distance (only present if nmap could determine them)
+    # uptime / distance (only present if nmap could determine them)
     uptime_el = host_el.find("uptime")
     if uptime_el is not None:
         host_info.uptime_seconds = uptime_el.get("seconds", "")
@@ -228,7 +211,7 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
     if distance_el is not None:
         host_info.distance_hops = distance_el.get("value", "")
 
-    # Host-level script output (-sC scripts that aren't tied to a specific port,
+    # host-level script output (-sC scripts not tied to a specific port,
     # e.g. smb-os-discovery, traceroute-geolocation)
     hostscript_el = host_el.find("hostscript")
     if hostscript_el is not None:
@@ -240,7 +223,7 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
                 )
             )
 
-    # Ports / services
+    # ports / services
     ports_el = host_el.find("ports")
     if ports_el is not None:
         for port_el in ports_el.findall("port"):
@@ -266,7 +249,7 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
                 cpe=cpe_list,
             )
 
-            # Per-port script output (-sC), e.g. http-title, ssl-cert, banner grabs
+            # per-port script output (-sC), e.g. http-title, ssl-cert, banner grabs
             for script_el in port_el.findall("script"):
                 service.scripts.append(
                     ScriptResult(
@@ -277,7 +260,7 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
 
             host_info.services.append(service)
 
-    # OS guess (best-effort — may legitimately be absent). Only worth a
+    # os guess (best-effort, may legitimately be absent). only worth a
     # warning if the host was actually up; if it's down, no OS scan was
     # possible for an unrelated reason and the warning would be misleading.
     os_el = host_el.find("os")
@@ -295,7 +278,7 @@ def parse_nmap_xml(xml_text: str, target_input: str) -> HostInfo:
 
 
 # ---------------------------------------------------------------------
-# Convenience wrapper combining both steps
+# convenience wrapper combining both steps
 # ---------------------------------------------------------------------
 
 def scan_target(
@@ -303,11 +286,10 @@ def scan_target(
     profile_name: str,
     cancel_event: "threading.Event | None" = None,
 ) -> tuple[HostInfo | None, str | None]:
-    """
-    Returns (HostInfo, error_message) — exactly one is None (this includes
-    cancellation, which comes back as a "Scan cancelled by user." error).
-    Also records the command used and scan start/end timing onto HostInfo.
-    """
+    # returns (HostInfo, error_message), exactly one is None (this
+    # includes cancellation, which comes back as a "Scan cancelled by
+    # user." error). also records the command used and scan start/end
+    # timing onto HostInfo.
     started_at = datetime.now()
     start_clock = time.monotonic()
 

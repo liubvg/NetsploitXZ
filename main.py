@@ -1,6 +1,4 @@
-"""
-main.py — entry point. Run with: python main.py
-"""
+# entry point, run with: python main.py
 
 from gui import launch_app
 

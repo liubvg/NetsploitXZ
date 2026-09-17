@@ -1,10 +1,3 @@
-"""
-env_check.py — Phase 1: checks whether Nmap and the exploitdb CSV are
-available before we let the user start a scan, plus a simple privilege
-check (informational only -- we never block scanning because of it).
-No Tkinter here, so this can be tested without a display.
-"""
-
 from __future__ import annotations
 
 import ctypes
@@ -111,12 +104,10 @@ def check_exploitdb(settings: Settings) -> ComponentStatus:
 
 
 def check_privileges() -> ComponentStatus:
-    """
-    Informational only. Some Nmap features (OS detection, SYN/UDP scans)
-    need elevated privileges to work fully, but we never block a scan
-    just because the app isn't elevated -- Nmap itself will just fall
-    back to slower/less accurate techniques.
-    """
+    # informational only. some nmap features (OS detection, SYN/UDP scans)
+    # need elevated privileges to work fully, but we never block a scan
+    # just because the app isn't elevated - nmap itself falls back to
+    # slower/less accurate techniques
     try:
         if os.name == "nt":
             is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
