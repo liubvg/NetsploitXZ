@@ -286,10 +286,6 @@ def scan_target(
     profile_name: str,
     cancel_event: "threading.Event | None" = None,
 ) -> tuple[HostInfo | None, str | None]:
-    # returns (HostInfo, error_message), exactly one is None (this
-    # includes cancellation, which comes back as a "Scan cancelled by
-    # user." error). also records the command used and scan start/end
-    # timing onto HostInfo.
     started_at = datetime.now()
     start_clock = time.monotonic()
 
