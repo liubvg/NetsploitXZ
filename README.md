@@ -17,7 +17,6 @@ The project provides a simple Tkinter GUI for running scans, viewing results, di
 - Nmap NSE script scanning
 - Exploit discovery using Exploit-DB
 - Confidence-based exploit matching
-- CPE-based matching
 - Security observations for commonly exposed services
 - TXT and HTML report generation
 - Scan cancellation
@@ -79,7 +78,6 @@ The matching system considers factors such as:
 - Product name
 - Software version
 - Version ranges
-- CPE information
 - Service type
 
 Matches are assigned a confidence level:
