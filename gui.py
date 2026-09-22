@@ -34,8 +34,6 @@ ACCENT = "#3ddc97"              # muted green accent (primary)
 ACCENT_DARK = "#2bb87f"
 ACCENT_CYAN = "#4fd1c5"         # secondary accent for subtitles/info
 COLOR_HIGH = "#ff5c5c"
-COLOR_MEDIUM = "#ffb454"
-COLOR_LOW = "#5cc8ff"
 COLOR_INFO = "#8b93a7"
 FONT_NORMAL = ("Segoe UI", 10)
 FONT_HEADER = ("Segoe UI", 15, "bold")
@@ -118,7 +116,7 @@ class ReconApp:
 
         # per-treeview sort state/config, keyed by id(tree). purely a gui
         # presentation concern, never touches the underlying data objects
-        # (ServiceInfo / ExploitMatch) or the scores/confidence they carry.
+        # (ServiceInfo / ExploitMatch).
         self._sort_state: dict[int, dict] = {}
         self._sort_config: dict[int, dict] = {}
         self._tree_headings: dict[int, dict] = {}
@@ -358,8 +356,8 @@ class ReconApp:
 
     # -------------------------------------------------------------
     # generic treeview column sorting (gui presentation only, never
-    # touches ExploitMatch/ServiceInfo data or how scores/confidence
-    # are calculated; it only reorders what's already displayed)
+    # touches ExploitMatch/ServiceInfo data; it only reorders what's
+    # already displayed)
     # -------------------------------------------------------------
     def _register_sortable_columns(self, tree: ttk.Treeview, columns_config: dict):
         # columns_config: {col_id: (heading_text, numeric, order_map_or_None)}
@@ -497,26 +495,21 @@ class ReconApp:
         tree_frame = ttk.Frame(self.tab_exploits)
         tree_frame.pack(fill="both", expand=True, side="top")
 
-        columns = ("port", "edb_id", "title", "confidence", "score")
+        columns = ("port", "edb_id", "title")
         self.exploit_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=6)
-        headings = {"port": "Port", "edb_id": "EDB-ID", "title": "Title", "confidence": "Confidence", "score": "Score"}
-        widths = {"port": 50, "edb_id": 70, "title": 420, "confidence": 90, "score": 60}
+        headings = {"port": "Port", "edb_id": "EDB-ID", "title": "Title"}
+        widths = {"port": 50, "edb_id": 70, "title": 420}
         for col in columns:
             self.exploit_tree.column(col, width=widths[col], anchor="w")
         self._register_sortable_columns(self.exploit_tree, {
             "port": (headings["port"], True, None),
             "edb_id": (headings["edb_id"], True, None),
             "title": (headings["title"], False, None),
-            "confidence": (headings["confidence"], False, {"High": 0, "Medium": 1, "Low": 2}),
-            "score": (headings["score"], True, None),
         })
         tree_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.exploit_tree.yview)
         self.exploit_tree.configure(yscrollcommand=tree_scrollbar.set)
         tree_scrollbar.pack(side="right", fill="y")
         self.exploit_tree.pack(side="left", fill="both", expand=True)
-        self.exploit_tree.tag_configure("High", foreground=COLOR_HIGH)
-        self.exploit_tree.tag_configure("Medium", foreground=COLOR_MEDIUM)
-        self.exploit_tree.tag_configure("Low", foreground=COLOR_LOW)
         self.exploit_tree.bind("<<TreeviewSelect>>", self._on_exploit_select)
 
         detail_frame = ttk.Frame(self.tab_exploits, style="Panel.TFrame", padding=10)
@@ -808,14 +801,13 @@ class ReconApp:
                 continue
             row_id = self.exploit_tree.insert(
                 "", "end",
-                values=(m.matched_service_port, m.edb_id, m.title, m.confidence, m.score),
-                tags=(m.confidence,),
+                values=(m.matched_service_port, m.edb_id, m.title),
             )
             self._exploit_by_row[row_id] = m
 
-        # default presentation order: score highest to lowest (display
-        # ordering only, the scores themselves come from exploits.py)
-        self._apply_default_sort(self.exploit_tree, "score", reverse=True)
+        # default presentation order: by port, so matches for the same
+        # service stay grouped together
+        self._apply_default_sort(self.exploit_tree, "port", reverse=False)
 
     def _apply_findings_filter(self):
         # gui-only severity filter over the already-computed findings list
@@ -869,7 +861,7 @@ class ReconApp:
             return
         detail = (
             f"EDB-ID: {match.edb_id}   Type: {match.exploit_type or 'unknown'}   "
-            f"Platform: {match.platform or 'unknown'}   Confidence: {match.confidence} (score {match.score})\n"
+            f"Platform: {match.platform or 'unknown'}\n"
             f"Matched against: {match.matched_product} {match.matched_version} (port {match.matched_service_port})\n"
             f"{match.title}"
         )

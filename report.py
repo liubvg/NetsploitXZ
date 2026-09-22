@@ -86,9 +86,6 @@ def _summary_counts(host: HostInfo, exploit_matches: list[ExploitMatch]) -> dict
         "open_ports": len(open_ports),
         "services_identified": services_identified,
         "total_matches": len(exploit_matches),
-        "high": sum(1 for m in exploit_matches if m.confidence == "High"),
-        "medium": sum(1 for m in exploit_matches if m.confidence == "Medium"),
-        "low": sum(1 for m in exploit_matches if m.confidence == "Low"),
     }
 
 
@@ -130,9 +127,6 @@ def generate_report(
         lines.append(f"Open ports:              {counts['open_ports']}")
         lines.append(f"Services identified:     {counts['services_identified']}")
         lines.append(f"Potential exploit matches: {counts['total_matches']}")
-        lines.append(f"High-confidence matches:   {counts['high']}")
-        lines.append(f"Medium-confidence matches: {counts['medium']}")
-        lines.append(f"Low-confidence matches:    {counts['low']}")
         lines.append("")
 
     lines.append("## TARGET")
@@ -210,7 +204,6 @@ def generate_report(
                 lines.append(f"Title:      {m.title}")
                 lines.append(f"Type:       {m.exploit_type or 'unknown'}")
                 lines.append(f"Platform:   {m.platform or 'unknown'}")
-                lines.append(f"Confidence: {m.confidence} (score {m.score})")
                 lines.append(f"Exploit-DB: {m.url}")
                 lines.append("")
     lines.append("")
@@ -272,12 +265,6 @@ def _badge(text: str) -> str:
     return f'<span class="badge {css_class}">{html.escape(text.strip("[]"))}</span>'
 
 
-def _confidence_badge(confidence: str) -> str:
-    key = confidence.upper()
-    css_class = _BADGE_CLASS.get(key, "badge-info")
-    return f'<span class="badge {css_class}">{html.escape(confidence)}</span>'
-
-
 def generate_html_report(
     host: HostInfo,
     exploit_matches: list[ExploitMatch],
@@ -308,9 +295,6 @@ def generate_html_report(
             ("Open ports", counts["open_ports"]),
             ("Services identified", counts["services_identified"]),
             ("Potential exploit matches", counts["total_matches"]),
-            ("High confidence", counts["high"]),
-            ("Medium confidence", counts["medium"]),
-            ("Low confidence", counts["low"]),
         ]
         for label, value in rows:
             parts.append(f"<div><span class='label'>{e(label)}:</span> {e(str(value))}</div>")
@@ -411,8 +395,7 @@ def generate_html_report(
             parts.append(f"<h3>Port {e(str(port))} &mdash; {e(matches[0].matched_product)} {e(matches[0].matched_version)}</h3>")
             for m in matches:
                 parts.append("<div class='exploit-block'>")
-                parts.append(f"<div><strong>EDB-{e(m.edb_id)}</strong> {_confidence_badge(m.confidence)} "
-                              f"<span class='note'>score {m.score}</span></div>")
+                parts.append(f"<div><strong>EDB-{e(m.edb_id)}</strong></div>")
                 parts.append(f"<div>{e(m.title)}</div>")
                 parts.append(
                     f"<div class='note'>Type: {e(m.exploit_type or 'unknown')} &middot; "
