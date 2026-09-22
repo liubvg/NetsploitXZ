@@ -16,7 +16,6 @@ The project provides a simple Tkinter GUI for running scans, viewing results, di
 - TCP and UDP scanning
 - Nmap NSE script scanning
 - Exploit discovery using Exploit-DB
-- Confidence-based exploit matching
 - Security observations for commonly exposed services
 - TXT and HTML report generation
 - Scan cancellation
@@ -73,18 +72,7 @@ The Standard profile is used by default.
 
 NetSploitXZ uses a local Exploit-DB `files_exploits.csv` index to find potentially relevant exploits for services detected by Nmap.
 
-The matching system considers factors such as:
-
-- Product name
-- Software version
-- Version ranges
-- Service type
-
-Matches are assigned a confidence level:
-
-- High
-- Medium
-- Low
+The matching system looks for the detected product name (and, when available, version) inside each Exploit-DB entry's title.
 
 The matching system is a simple heuristic and is intended to help identify exploits for further investigation.
 
@@ -108,7 +96,6 @@ Reports contain information such as:
 - Nmap script results
 - Security observations
 - Potential exploit matches
-- Confidence levels
 - Recommendations
 - Scan information
 
