@@ -56,10 +56,6 @@ SCAN_PROFILES = {
 
 DEFAULT_PROFILE = "Standard"
 
-CONFIDENCE_HIGH = "High"
-CONFIDENCE_MEDIUM = "Medium"
-CONFIDENCE_LOW = "Low"
-
 EXPLOITDB_URL_TEMPLATE = "https://www.exploit-db.com/exploits/{edb_id}"
 
 
