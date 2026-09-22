@@ -461,16 +461,6 @@ class ReconApp:
         self.script_text.configure(state="disabled")
 
     def _build_findings_tab(self):
-        filter_bar = ttk.Frame(self.tab_findings)
-        filter_bar.pack(fill="x", side="top", pady=(0, 6))
-        ttk.Label(filter_bar, text="Severity:").pack(side="left", padx=(0, 6))
-        self.findings_filter_var = tk.StringVar(value="ALL")
-        for level in ("ALL", "HIGH", "MEDIUM", "LOW", "INFO"):
-            ttk.Radiobutton(
-                filter_bar, text=level, value=level, variable=self.findings_filter_var,
-                command=self._apply_findings_filter,
-            ).pack(side="left", padx=(0, 8))
-
         container = ttk.Frame(self.tab_findings)
         container.pack(fill="both", expand=True)
         self.findings_text = tk.Text(
@@ -721,7 +711,6 @@ class ReconApp:
         self._current_findings = []
         self._exploit_by_row = {}
         self.exploit_filter_var.set("")
-        self.findings_filter_var.set("ALL")
 
     def _render_results(self):
         host = self.current_host
@@ -772,8 +761,7 @@ class ReconApp:
 
         # --- Security Findings tab ---
         self._current_findings = _security_observations(host)
-        self.findings_filter_var.set("ALL")
-        self._apply_findings_filter()
+        self._render_findings()
 
         # --- Exploit Discovery tab ---
         if not self.current_exploitdb_available:
@@ -809,15 +797,10 @@ class ReconApp:
         # service stay grouped together
         self._apply_default_sort(self.exploit_tree, "port", reverse=False)
 
-    def _apply_findings_filter(self):
-        # gui-only severity filter over the already-computed findings list
-        severity = self.findings_filter_var.get()
+    def _render_findings(self):
+        # no severity filtering/scoring - just show every observation
         findings = getattr(self, "_current_findings", [])
-        if severity == "ALL":
-            shown = findings
-        else:
-            shown = [f for f in findings if f.strip().upper().startswith(f"[{severity}]")]
-        self._set_text(self.findings_text, "\n\n".join(shown) if shown else "No findings match this filter.")
+        self._set_text(self.findings_text, "\n\n".join(findings) if findings else "No findings for this scan.")
 
     def _set_text(self, widget: tk.Text, content: str):
         widget.configure(state="normal")

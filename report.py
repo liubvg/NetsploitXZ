@@ -19,9 +19,8 @@ REPORT_SUBTITLE = "NETWORK RECONNAISSANCE & EXPLOIT DISCOVERY"
 
 def _security_observations(host: HostInfo) -> list[str]:
     # simple, explainable heuristics, not a vulnerability scanner.
-    # flags things worth a human looking at, nothing more. each
-    # observation is a plain string starting with a severity tag,
-    # e.g. "[HIGH] ...".
+    # flags things worth a human looking at, nothing more. no severity
+    # tags/scoring of any kind - deliberately left out for now.
     observations: list[str] = []
     open_services = [s for s in host.services if s.state == "open"]
 
@@ -30,47 +29,47 @@ def _security_observations(host: HostInfo) -> list[str]:
 
         if service.product and service.version:
             observations.append(
-                f"[LOW] {service.port}/{service.protocol}: service banner discloses "
+                f"{service.port}/{service.protocol}: service banner discloses "
                 f"software and version ({service.product} {service.version}), which can "
                 f"help an attacker identify known issues."
             )
         elif not service.product:
             observations.append(
-                f"[LOW] {service.port}/{service.protocol}: service could not be positively "
+                f"{service.port}/{service.protocol}: service could not be positively "
                 f"identified by Nmap."
             )
 
         if "ftp" in name and "sftp" not in name:
             observations.append(
-                f"[MEDIUM] {service.port}/{service.protocol}: FTP service detected. "
+                f"{service.port}/{service.protocol}: FTP service detected. "
                 f"Review whether encrypted alternatives are available and whether anonymous "
                 f"access is enabled."
             )
         elif "telnet" in name:
             observations.append(
-                f"[HIGH] {service.port}/{service.protocol}: Telnet service detected. "
+                f"{service.port}/{service.protocol}: Telnet service detected. "
                 f"Telnet transmits traffic without encryption and should generally be "
                 f"replaced with SSH."
             )
         elif name == "http":
             observations.append(
-                f"[LOW] {service.port}/{service.protocol}: HTTP service detected. "
+                f"{service.port}/{service.protocol}: HTTP service detected. "
                 f"Verify whether sensitive information is exposed over an unencrypted channel."
             )
         elif "microsoft-ds" in name or "netbios-ssn" in name or name == "smb":
             observations.append(
-                f"[MEDIUM] {service.port}/{service.protocol}: SMB service detected. "
+                f"{service.port}/{service.protocol}: SMB service detected. "
                 f"Review SMB configuration, authentication controls, and network exposure."
             )
         elif "ssh" in name:
             observations.append(
-                f"[INFO] {service.port}/{service.protocol}: SSH service detected. "
+                f"{service.port}/{service.protocol}: SSH service detected. "
                 f"Review SSH authentication and configuration."
             )
 
     if len(open_services) >= 8:
         observations.append(
-            f"[MEDIUM] {len(open_services)} open services were detected on this host. "
+            f"{len(open_services)} open services were detected on this host. "
             f"Review whether all discovered services are required."
         )
 
@@ -367,15 +366,7 @@ def generate_html_report(
 
     parts.append("<h2>Security Observations</h2>")
     for obs in _security_observations(host):
-        # observations normally start with a "[SEVERITY]" tag; the one
-        # exception is the "no observations" fallback message, which has
-        # no tag at all and should just be shown as plain text
-        if obs.startswith("[") and "]" in obs:
-            tag_end = obs.find("]") + 1
-            tag, rest = obs[:tag_end], obs[tag_end:]
-            parts.append(f"<div style='margin-bottom:8px'>{_badge(tag)} {e(rest.strip())}</div>")
-        else:
-            parts.append(f"<div style='margin-bottom:8px'>{e(obs)}</div>")
+        parts.append(f"<div style='margin-bottom:8px'>{e(obs)}</div>")
 
     parts.append("<h2>Exploit Discovery</h2>")
     if not exploitdb_available:
