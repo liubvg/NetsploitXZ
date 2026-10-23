@@ -21,6 +21,7 @@ The project provides a simple Tkinter GUI for running scans, viewing results, di
 - Scan cancellation
 - Background scanning
 - Quick, Standard, Full, and Comprehensive scan profiles
+- Custom Command tab for building your own Nmap scan (service/version detection, OS detection, script scan, UDP scan, timing, port selection, and free-form extra arguments), with results shown in the same tabs as a profile scan
 
 ## How It Works
 
@@ -31,7 +32,7 @@ Target
 Target Validation
   |
   v
-Nmap Scan
+Nmap Scan (Scan Profile or Custom Command)
   |
   v
 Nmap XML Output
@@ -67,6 +68,20 @@ Scans all 65,535 TCP ports with version and OS detection.
 Scans all TCP ports and the top UDP ports, with version detection, OS detection, and Nmap default scripts.
 
 The Standard profile is used by default.
+
+## Custom Command Scans
+
+In addition to the fixed scan profiles, the **Custom Command** tab lets you build your own Nmap scan against the target entered at the top of the window:
+
+- Service/Version Detection (`-sV`)
+- OS Detection (`-O`)
+- Default Script Scan (`-sC`)
+- UDP Scan (`-sS -sU`)
+- Timing template (`-T0` through `-T5`)
+- Port selection: default top 1000, all ports (`-p-`), top N ports, or a custom port list/range
+- Additional arguments field for any other Nmap flags not covered above
+
+A live preview shows the exact command that will run. A custom scan goes through the same pipeline as a profile scan, so its results appear in the Host Info, Ports & Services, Security Findings, and Exploit Discovery tabs, and can be exported the same way.
 
 ## Exploit Discovery
 
@@ -176,7 +191,7 @@ NetsploitXZ/
 |---|---|
 | `main.py` | Application entry point |
 | `gui.py` | Tkinter graphical interface |
-| `nmap_scan.py` | Runs Nmap and parses XML results |
+| `nmap_scan.py` | Builds and runs Nmap scans (scan profiles and custom commands) and parses XML results |
 | `exploits.py` | Loads and matches Exploit-DB data |
 | `report.py` | Generates TXT and HTML reports |
 | `env_check.py` | Checks required components |
@@ -185,11 +200,13 @@ NetsploitXZ/
 
 ## Limitations
 
-The exploit discovery system is based on  matching and is not a complete vulnerability scanner.
+The exploit discovery system is based on matching and is not a complete vulnerability scanner.
 
-A matching Exploit-DB entry does not confirm that a target is definately vulnerable. Results should be manually reviewed.
+A matching Exploit-DB entry does not confirm that a target is definitely vulnerable. Results should be manually reviewed.
 
 OS detection, SYN scans, and UDP scans may require Administrator/root privileges for complete results.
+
+The Custom Command tab builds a standard Nmap scan from the selected options; it does not accept arbitrary shell syntax (pipes, redirects, etc.) beyond Nmap's own arguments.
 
 ## Responsible Use
 
