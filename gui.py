@@ -10,7 +10,11 @@ import webbrowser
 from config import Settings, SCAN_PROFILES, DEFAULT_PROFILE, DEFAULT_REPORTS_DIR
 from env_check import run_environment_check
 from validate import validate_target
-from nmap_scan import scan_target, HostInfo, run_custom_nmap, CUSTOM_COMMAND_TIMEOUT_SECONDS
+import nmap_scan
+from nmap_scan import (
+    scan_target, HostInfo, run_custom_nmap, build_custom_nmap_command,
+    CUSTOM_COMMAND_TIMEOUT_SECONDS, VALID_TIMING_TEMPLATES,
+)
 from exploits import load_exploit_index, correlate_all_services, ExploitMatch
 from report import generate_report, generate_html_report, _security_observations
 
@@ -113,13 +117,6 @@ class ReconApp:
         self.current_errors: list[str] = []
         self.scan_in_progress = False
         self.cancel_event: threading.Event | None = None
-
-        # state for the separate "Custom Command" tab - kept independent
-        # of the main profile-based scan above so a custom command can't
-        # be confused with (or clobber) a running standard scan
-        self.custom_result_queue: "queue.Queue" = queue.Queue()
-        self.custom_scan_in_progress = False
-        self.custom_cancel_event: threading.Event | None = None
 
         # per-treeview sort state/config, keyed by id(tree). purely a gui
         # presentation concern, never touches the underlying data objects
@@ -533,79 +530,147 @@ class ReconApp:
         self._selected_exploit_url: str | None = None
 
     def _build_custom_tab(self):
-        # lets the user run nmap with whatever flags they want, rather
-        # than one of the fixed SCAN_PROFILES. output is shown raw
-        # (nmap's normal stdout, not XML) since there's no guarantee the
-        # user's flags produce something parseable into HostInfo.
+        # lets the user build their own nmap command from checkboxes/
+        # dropdowns (plus a free-text field for anything not covered)
+        # instead of picking one of the fixed SCAN_PROFILES. it always
+        # captures -oX under the hood, so the result parses into the
+        # same HostInfo a profile scan produces and is shown in the same
+        # Host Info / Ports & Services / Security Findings / Exploit
+        # Discovery tabs - there's no separate results view here.
         intro = ttk.Label(
             self.tab_custom,
             text=(
-                "Runs Nmap directly with the arguments below, against the Target field at the "
-                "top of the window. Only scan systems you are authorized to test."
+                "Builds and runs a custom Nmap command against the Target field at the top of "
+                "the window. Results appear in the tabs above, same as a profile scan. Only scan "
+                "systems you are authorized to test."
             ),
             style="Muted.TLabel", wraplength=900, justify="left",
         )
-        intro.pack(fill="x", side="top", pady=(0, 8))
+        intro.pack(fill="x", side="top", pady=(0, 10))
 
-        args_bar = ttk.Frame(self.tab_custom)
-        args_bar.pack(fill="x", side="top", pady=(0, 8))
-        ttk.Label(args_bar, text="Nmap arguments:").pack(side="left", padx=(0, 6))
-        self.custom_args_var = tk.StringVar(value="-sV -T4")
-        self.custom_args_entry = ttk.Entry(args_bar, textvariable=self.custom_args_var)
-        self.custom_args_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.custom_args_entry.bind("<Return>", lambda e: self._on_run_custom_command())
+        options_frame = ttk.Frame(self.tab_custom, style="Panel.TFrame", padding=10)
+        options_frame.pack(fill="x", side="top", pady=(0, 8))
 
+        # --- row 1: detection flags ---
+        flags_row = ttk.Frame(options_frame, style="Panel.TFrame")
+        flags_row.pack(fill="x", pady=(0, 8))
+        self.custom_sv_var = tk.BooleanVar(value=True)
+        self.custom_os_var = tk.BooleanVar(value=False)
+        self.custom_sc_var = tk.BooleanVar(value=False)
+        self.custom_udp_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flags_row, text="Service/Version Detection (-sV)", variable=self.custom_sv_var,
+                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(flags_row, text="OS Detection (-O)", variable=self.custom_os_var,
+                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(flags_row, text="Default Script Scan (-sC)", variable=self.custom_sc_var,
+                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(flags_row, text="UDP Scan (-sS -sU)", variable=self.custom_udp_var,
+                         command=self._update_custom_preview).pack(side="left")
+
+        # --- row 2: timing + port selection ---
+        scope_row = ttk.Frame(options_frame, style="Panel.TFrame")
+        scope_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(scope_row, text="Timing:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        self.custom_timing_var = tk.StringVar(value="T4")
+        timing_box = ttk.Combobox(
+            scope_row, textvariable=self.custom_timing_var, values=list(VALID_TIMING_TEMPLATES),
+            state="readonly", width=4,
+        )
+        timing_box.pack(side="left", padx=(0, 16))
+        timing_box.bind("<<ComboboxSelected>>", lambda e: self._update_custom_preview())
+
+        ttk.Label(scope_row, text="Ports:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        self.custom_port_mode_var = tk.StringVar(value=nmap_scan.PORT_MODE_DEFAULT)
+        port_modes = (
+            (nmap_scan.PORT_MODE_DEFAULT, "Default (top 1000)"),
+            (nmap_scan.PORT_MODE_ALL, "All ports (-p-)"),
+            (nmap_scan.PORT_MODE_TOP, "Top N"),
+            (nmap_scan.PORT_MODE_CUSTOM, "Custom list/range"),
+        )
+        for value, text in port_modes:
+            ttk.Radiobutton(
+                scope_row, text=text, value=value, variable=self.custom_port_mode_var,
+                command=self._on_custom_port_mode_changed,
+            ).pack(side="left", padx=(0, 10))
+
+        self.custom_port_value_var = tk.StringVar(value="")
+        self.custom_port_value_entry = ttk.Entry(scope_row, textvariable=self.custom_port_value_var, width=16)
+        self.custom_port_value_entry.pack(side="left", padx=(4, 0))
+        self.custom_port_value_var.trace_add("write", lambda *_: self._update_custom_preview())
+        self.custom_port_value_entry.configure(state="disabled")
+
+        # --- row 3: free-form extra args, for anything not covered above ---
+        extra_row = ttk.Frame(options_frame, style="Panel.TFrame")
+        extra_row.pack(fill="x")
+        ttk.Label(extra_row, text="Additional arguments:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        self.custom_extra_var = tk.StringVar(value="")
+        extra_entry = ttk.Entry(extra_row, textvariable=self.custom_extra_var)
+        extra_entry.pack(side="left", fill="x", expand=True)
+        extra_entry.bind("<Return>", lambda e: self._on_run_custom_command())
+        self.custom_extra_var.trace_add("write", lambda *_: self._update_custom_preview())
+
+        preview_bar = ttk.Frame(self.tab_custom)
+        preview_bar.pack(fill="x", side="top", pady=(0, 10))
+        ttk.Label(preview_bar, text="Command:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        self.custom_preview_var = tk.StringVar()
+        preview_label = ttk.Label(
+            preview_bar, textvariable=self.custom_preview_var, style="Muted.TLabel",
+            wraplength=900, justify="left",
+        )
+        preview_label.pack(side="left", fill="x", expand=True)
+
+        run_bar = ttk.Frame(self.tab_custom)
+        run_bar.pack(fill="x", side="top")
         self.custom_run_button = ttk.Button(
-            args_bar, text="RUN COMMAND", style="Accent.TButton", command=self._on_run_custom_command,
+            run_bar, text="RUN CUSTOM SCAN", style="Accent.TButton", command=self._on_run_custom_command,
         )
         self.custom_run_button.pack(side="left", padx=(0, 6))
         self.custom_cancel_button = ttk.Button(
-            args_bar, text="CANCEL", style="Cancel.TButton", command=self._on_cancel_custom_command,
+            run_bar, text="CANCEL", style="Cancel.TButton", command=self._on_cancel_scan,
             state="disabled",
         )
         self.custom_cancel_button.pack(side="left")
 
-        preview_bar = ttk.Frame(self.tab_custom)
-        preview_bar.pack(fill="x", side="top", pady=(0, 8))
-        self.custom_preview_var = tk.StringVar(value="nmap -sV -T4 <target>")
-        ttk.Label(preview_bar, textvariable=self.custom_preview_var, style="Muted.TLabel").pack(side="left")
-        self.custom_args_var.trace_add("write", lambda *_: self._update_custom_preview())
-
-        output_frame = ttk.Frame(self.tab_custom)
-        output_frame.pack(fill="both", expand=True, side="top")
-        self.custom_output_text = tk.Text(
-            output_frame, bg=BG_PANEL, fg=FG_TEXT, font=FONT_MONO_SMALL,
-            relief="flat", wrap="word", padx=10, pady=10,
+        note = ttk.Label(
+            self.tab_custom,
+            text="Results, including Nmap's own progress, land in the Host Info / Ports & Services / "
+                 "Security Findings tabs once the scan finishes - watch the progress bar above the tabs.",
+            style="Muted.TLabel", wraplength=900, justify="left",
         )
-        output_scrollbar = ttk.Scrollbar(output_frame, orient="vertical", command=self.custom_output_text.yview)
-        self.custom_output_text.configure(yscrollcommand=output_scrollbar.set)
-        output_scrollbar.pack(side="right", fill="y")
-        self.custom_output_text.pack(side="left", fill="both", expand=True)
-        self.custom_output_text.configure(state="disabled")
+        note.pack(fill="x", side="top", pady=(10, 0))
 
-        bottom_bar = ttk.Frame(self.tab_custom)
-        bottom_bar.pack(fill="x", side="bottom", pady=(8, 0))
-        self.custom_status_var = tk.StringVar(value="Ready.")
-        ttk.Label(bottom_bar, textvariable=self.custom_status_var, style="Muted.TLabel").pack(side="left")
-        self.custom_save_button = ttk.Button(
-            bottom_bar, text="Save Output...", style="Secondary.TButton",
-            command=self._on_save_custom_output, state="disabled",
-        )
-        self.custom_save_button.pack(side="right")
-
-        self._custom_last_output = ""
+        self.target_var.trace_add("write", lambda *_: self._update_custom_preview())
         self._update_custom_preview()
 
+    def _on_custom_port_mode_changed(self):
+        needs_value = self.custom_port_mode_var.get() in (nmap_scan.PORT_MODE_TOP, nmap_scan.PORT_MODE_CUSTOM)
+        self.custom_port_value_entry.configure(state="normal" if needs_value else "disabled")
+        self._update_custom_preview()
+
+    def _current_custom_build_kwargs(self) -> dict:
+        return dict(
+            service_version=self.custom_sv_var.get(),
+            os_detection=self.custom_os_var.get(),
+            script_scan=self.custom_sc_var.get(),
+            udp_scan=self.custom_udp_var.get(),
+            timing=self.custom_timing_var.get(),
+            port_mode=self.custom_port_mode_var.get(),
+            port_value=self.custom_port_value_var.get(),
+            extra_args=self.custom_extra_var.get(),
+        )
+
     def _update_custom_preview(self):
-        # best-effort command preview only (uses shutil.which indirectly
-        # via build_custom_nmap_command at run time for the real check);
-        # this is just so the user can see roughly what will execute
-        args_text = self.custom_args_var.get().strip()
+        # uses the real builder, so the preview is exactly what will run
+        # (including the "nmap not found" case), not an approximation
         target_text = self.target_var.get().strip() or "<target>"
-        self.custom_preview_var.set(f"nmap {args_text} {target_text}".strip())
+        cmd, error = build_custom_nmap_command(target_text, **self._current_custom_build_kwargs())
+        if error and not cmd:
+            self.custom_preview_var.set(error)
+        else:
+            self.custom_preview_var.set(" ".join(cmd))
 
     def _on_run_custom_command(self):
-        if self.custom_scan_in_progress:
+        if self.scan_in_progress:
             return
 
         raw_target = self.target_var.get()
@@ -618,98 +683,19 @@ class ReconApp:
             messagebox.showerror("Nmap unavailable", self._env_report.nmap.impact_if_missing)
             return
 
-        custom_args = self.custom_args_var.get().strip()
+        build_kwargs = self._current_custom_build_kwargs()
+        port_mode = build_kwargs["port_mode"]
+        if port_mode in (nmap_scan.PORT_MODE_TOP, nmap_scan.PORT_MODE_CUSTOM) and not build_kwargs["port_value"].strip():
+            messagebox.showerror("Missing port value", "Enter a port count or list/range for the selected port mode.")
+            return
 
-        self.custom_cancel_event = threading.Event()
-        self.custom_scan_in_progress = True
-        self.custom_run_button.configure(state="disabled")
-        self.custom_cancel_button.configure(state="normal")
-        self.custom_save_button.configure(state="disabled")
-        self._set_text(self.custom_output_text, "")
-        self.custom_status_var.set(f"Running: nmap {custom_args} {target} ...")
-
-        worker = threading.Thread(
-            target=self._run_custom_command_worker,
-            args=(custom_args, target, self.custom_cancel_event),
-            daemon=True,
+        self._launch_scan(
+            scan_callable=lambda cancel_event: run_custom_nmap(
+                target, cancel_event=cancel_event, timeout_seconds=CUSTOM_COMMAND_TIMEOUT_SECONDS, **build_kwargs
+            ),
+            label="Custom",
+            status_message=f"Running custom scan against {target}... this may take a while.",
         )
-        worker.start()
-        self.root.after(200, self._poll_custom_queue)
-
-    def _on_cancel_custom_command(self):
-        if self.custom_scan_in_progress and self.custom_cancel_event is not None:
-            self.custom_cancel_event.set()
-            self.custom_status_var.set("Cancelling...")
-            self.custom_cancel_button.configure(state="disabled")
-
-    def _run_custom_command_worker(self, custom_args: str, target: str, cancel_event: threading.Event):
-        # background thread only - never touches tkinter widgets directly,
-        # same reasoning as _run_scan_worker above
-        try:
-            stdout, stderr, error, cmd = run_custom_nmap(
-                custom_args, target, cancel_event=cancel_event,
-                timeout_seconds=CUSTOM_COMMAND_TIMEOUT_SECONDS,
-            )
-            self.custom_result_queue.put(("done", (stdout, stderr, error, cmd)))
-        except Exception as exc:  # noqa: BLE001 -- last-resort safety net
-            self.custom_result_queue.put(("done", ("", "", f"Unexpected error: {exc}", [])))
-
-    def _poll_custom_queue(self):
-        try:
-            _kind, payload = self.custom_result_queue.get_nowait()
-        except queue.Empty:
-            if self.custom_scan_in_progress:
-                self.root.after(200, self._poll_custom_queue)
-            return
-
-        self.custom_scan_in_progress = False
-        self.custom_cancel_event = None
-        self.custom_run_button.configure(state="normal")
-        self.custom_cancel_button.configure(state="disabled")
-
-        stdout, stderr, error, cmd = payload
-        command_line = " ".join(cmd) if cmd else ""
-        output_parts = []
-        if command_line:
-            output_parts.append(f"$ {command_line}\n")
-        if stdout:
-            output_parts.append(stdout)
-        if stderr:
-            output_parts.append("\n--- stderr ---\n" + stderr)
-        if error:
-            output_parts.append(f"\n--- {error} ---\n")
-
-        full_output = "".join(output_parts) or "(no output)"
-        self._custom_last_output = full_output
-        self._set_text(self.custom_output_text, full_output)
-        self.custom_save_button.configure(state="normal")
-
-        if error and "cancelled" in error.lower():
-            self.custom_status_var.set("Cancelled.")
-        elif error:
-            self.custom_status_var.set(f"Finished with an error: {error}")
-        else:
-            self.custom_status_var.set("Done.")
-
-    def _on_save_custom_output(self):
-        if not self._custom_last_output:
-            return
-        DEFAULT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        save_path = filedialog.asksaveasfilename(
-            title="Save custom command output as...",
-            initialdir=str(DEFAULT_REPORTS_DIR),
-            initialfile="custom_nmap_output.txt",
-            defaultextension=".txt",
-            filetypes=[("Text file", "*.txt")],
-        )
-        if not save_path:
-            return
-        try:
-            Path(save_path).write_text(self._custom_last_output, encoding="utf-8")
-        except OSError as exc:
-            messagebox.showerror("Save failed", f"Could not save output: {exc}")
-            return
-        self.custom_status_var.set(f"Output saved to {save_path}")
 
     def _build_bottom_bar(self, parent):
         bar = ttk.Frame(parent)
@@ -764,6 +750,17 @@ class ReconApp:
 
     # -------------------------------------------------------------
     # scan lifecycle
+    #
+    # both the Profile scan (top bar) and the Custom Command tab run
+    # through this same pipeline: _launch_scan() -> _run_scan_worker()
+    # (background thread) -> result_queue -> _poll_queue() (back on the
+    # gui thread) -> _render_results(). the only thing that differs
+    # between them is which function actually calls nmap - scan_target()
+    # for a profile, run_custom_nmap() for a hand-built command - so a
+    # scan launched from either tab shows up in the same Host Info /
+    # Ports & Services / Security Findings / Exploit Discovery tabs,
+    # uses the same progress bar and cancel button, and can't be started
+    # while the other one is still running.
     # -------------------------------------------------------------
     def _on_start_scan(self):
         if self.scan_in_progress:
@@ -794,27 +791,42 @@ class ReconApp:
         self.settings.last_profile = profile_name
         self.settings.save()
 
-        self._clear_results()
-        self.cancel_event = threading.Event()
-        self._set_scanning_state(True)
-        self.status_var.set(f"Scanning {target} ({profile_name})... this may take a while.")
-
-        worker = threading.Thread(
-            target=self._run_scan_worker, args=(target, profile_name, self.cancel_event), daemon=True
+        self._launch_scan(
+            scan_callable=lambda cancel_event: scan_target(target, profile_name, cancel_event=cancel_event),
+            label=profile_name,
+            status_message=f"Scanning {target} ({profile_name})... this may take a while.",
         )
-        worker.start()
-        self.root.after(200, self._poll_queue)
 
     def _on_cancel_scan(self):
         if self.scan_in_progress and self.cancel_event is not None:
             self.cancel_event.set()
             self.status_var.set("Cancelling scan...")
             self.cancel_button.configure(state="disabled")
+            self.custom_cancel_button.configure(state="disabled")
+
+    def _launch_scan(self, scan_callable, label: str, status_message: str):
+        # scan_callable takes a single cancel_event argument and returns
+        # (HostInfo | None, error_message | None) - the same contract
+        # scan_target() and run_custom_nmap() both already follow.
+        self._clear_results()
+        self.cancel_event = threading.Event()
+        self._set_scanning_state(True)
+        self.status_var.set(status_message)
+
+        worker = threading.Thread(
+            target=self._run_scan_worker, args=(scan_callable, self.cancel_event, label), daemon=True
+        )
+        worker.start()
+        self.root.after(200, self._poll_queue)
 
     def _set_scanning_state(self, scanning: bool):
         self.scan_in_progress = scanning
         self.start_button.configure(state="disabled" if scanning else "normal")
         self.cancel_button.configure(state="normal" if scanning else "disabled")
+        # the custom tab's own run/cancel buttons mirror the same state,
+        # since both tabs share one scan_in_progress flag
+        self.custom_run_button.configure(state="disabled" if scanning else "normal")
+        self.custom_cancel_button.configure(state="normal" if scanning else "disabled")
         if scanning:
             self.progress_frame.pack(fill="x", pady=(0, 10), before=self.notebook)
             self.progress_bar.start()
@@ -822,7 +834,7 @@ class ReconApp:
             self.progress_bar.stop()
             self.progress_frame.pack_forget()
 
-    def _run_scan_worker(self, target: str, profile_name: str, cancel_event: threading.Event):
+    def _run_scan_worker(self, scan_callable, cancel_event: threading.Event, label: str):
         # runs entirely in a background thread, never touches tkinter
         # widgets directly. wrapped in a broad try/except: if anything
         # unexpected raises here, the thread must still report back on
@@ -832,7 +844,7 @@ class ReconApp:
         # restarting the app.
         try:
             errors: list[str] = []
-            host, err = scan_target(target, profile_name, cancel_event=cancel_event)
+            host, err = scan_callable(cancel_event)
             if err:
                 kind = "cancelled" if "cancelled by user" in err.lower() else "error"
                 self.result_queue.put((kind, err))
@@ -848,7 +860,7 @@ class ReconApp:
                 else:
                     matches = correlate_all_services(host.services, entries)
 
-            self.result_queue.put(("done", (host, matches, exploitdb_available, errors, profile_name)))
+            self.result_queue.put(("done", (host, matches, exploitdb_available, errors, label)))
         except Exception as exc:  # noqa: BLE001 -- last-resort safety net, see comment above
             self.result_queue.put(("error", f"Unexpected error during scan: {exc}"))
 
@@ -872,10 +884,10 @@ class ReconApp:
             messagebox.showerror("Scan failed", payload)
             return
 
-        host, matches, exploitdb_available, errors, profile_name = payload
+        host, matches, exploitdb_available, errors, label = payload
         self.current_host = host
         self.current_matches = matches
-        self.current_profile = profile_name
+        self.current_profile = label
         self.current_exploitdb_available = exploitdb_available
         self.current_errors = errors
 
@@ -883,6 +895,10 @@ class ReconApp:
         self.export_html_button.configure(state="normal")
         self.export_txt_button.configure(state="normal")
         self.status_var.set(f"Scan complete for {host.ip_address or host.target_input}.")
+        if label == "Custom":
+            # the custom tab has no results view of its own - jump the
+            # user straight to where the results actually landed
+            self.notebook.select(self.tab_host)
 
     # -------------------------------------------------------------
     # rendering results
