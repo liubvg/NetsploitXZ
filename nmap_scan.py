@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import threading
@@ -9,6 +10,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from config import SCAN_PROFILES
+
+# upper bound on how long a user-supplied custom nmap command is allowed to
+# run before it's killed automatically, same safety net the scan profiles
+# already have via their own timeout_seconds
+CUSTOM_COMMAND_TIMEOUT_SECONDS = 3600
 
 
 # ---------------------------------------------------------------------
@@ -86,6 +92,79 @@ def build_nmap_command(target: str, profile_name: str) -> tuple[list[str], str |
 
 
 # ---------------------------------------------------------------------
+# shared subprocess runner: cancellable, pipe-draining, timeout-bound.
+# used by both the profile-based scan (run_nmap) and the free-form
+# custom command (run_custom_nmap) so the process-management logic -
+# the part that's easy to get subtly wrong - only exists once.
+# ---------------------------------------------------------------------
+
+def _run_cancellable_subprocess(
+    cmd: list[str],
+    timeout_seconds: float,
+    cancel_event: "threading.Event | None" = None,
+) -> tuple[str, str, str | None]:
+    # returns (stdout, stderr, error_message). error_message is set on
+    # cancellation, timeout, or a launch failure; stdout/stderr hold
+    # whatever was captured even when an error occurred (nmap sometimes
+    # produces partial/useful output before being killed).
+    try:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+    except OSError as exc:
+        return "", "", f"Failed to start nmap: {exc}"
+
+    # nmap's output can be larger than the OS pipe buffer. if we only
+    # poll process.poll() without reading the pipes, nmap blocks trying
+    # to write and the scan hangs forever once the buffer fills. so a
+    # background thread drains both pipes via communicate() while this
+    # loop just watches for cancel/timeout.
+    result_holder: dict = {}
+
+    def _drain_pipes():
+        result_holder["stdout"], result_holder["stderr"] = process.communicate()
+
+    reader_thread = threading.Thread(target=_drain_pipes, daemon=True)
+    reader_thread.start()
+
+    start_time = time.monotonic()
+    poll_interval = 0.25
+    while reader_thread.is_alive():
+        if cancel_event is not None and cancel_event.is_set():
+            process.terminate()
+            reader_thread.join(timeout=5)
+            if reader_thread.is_alive():
+                process.kill()  # make sure nothing orphaned survives
+                reader_thread.join()
+            return (
+                result_holder.get("stdout", "") or "",
+                result_holder.get("stderr", "") or "",
+                "Scan cancelled by user.",
+            )
+
+        if time.monotonic() - start_time > timeout_seconds:
+            process.kill()
+            reader_thread.join()
+            return (
+                result_holder.get("stdout", "") or "",
+                result_holder.get("stderr", "") or "",
+                f"Scan timed out after {timeout_seconds} seconds.",
+            )
+
+        time.sleep(poll_interval)
+
+    stdout = result_holder.get("stdout", "") or ""
+    stderr = result_holder.get("stderr", "") or ""
+
+    if process.returncode != 0 and not stdout:
+        # nmap sometimes still returns useful stdout even with warnings on
+        # stderr, so only treat it as a hard failure if we got no output at all
+        return stdout, stderr, f"Nmap exited with an error: {stderr.strip() or 'unknown error'}"
+
+    return stdout, stderr, None
+
+
+# ---------------------------------------------------------------------
 # step 1: run nmap, capture xml
 # ---------------------------------------------------------------------
 
@@ -110,53 +189,55 @@ def run_nmap(
     profile = SCAN_PROFILES.get(profile_name, SCAN_PROFILES["Standard"])
     timeout_seconds = profile["timeout_seconds"]
 
-    try:
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-    except OSError as exc:
-        return None, f"Failed to start nmap: {exc}", cmd
-
-    # nmap's xml output can be larger than the OS pipe buffer (a few tens
-    # of KB). if we only poll process.poll() without reading the pipes,
-    # nmap blocks trying to write and the scan hangs forever once the
-    # buffer fills. so a background thread drains both pipes via
-    # communicate() while this loop just watches for cancel/timeout.
-    result_holder: dict = {}
-
-    def _drain_pipes():
-        result_holder["stdout"], result_holder["stderr"] = process.communicate()
-
-    reader_thread = threading.Thread(target=_drain_pipes, daemon=True)
-    reader_thread.start()
-
-    start_time = time.monotonic()
-    poll_interval = 0.25
-    while reader_thread.is_alive():
-        if cancel_event is not None and cancel_event.is_set():
-            process.terminate()
-            reader_thread.join(timeout=5)
-            if reader_thread.is_alive():
-                process.kill()  # make sure nothing orphaned survives
-                reader_thread.join()
-            return None, "Scan cancelled by user.", cmd
-
-        if time.monotonic() - start_time > timeout_seconds:
-            process.kill()
-            reader_thread.join()
-            return None, f"Scan timed out after {timeout_seconds} seconds.", cmd
-
-        time.sleep(poll_interval)
-
-    stdout = result_holder.get("stdout", "") or ""
-    stderr = result_holder.get("stderr", "") or ""
-
-    if process.returncode != 0 and not stdout:
-        # nmap sometimes still returns useful stdout even with warnings on
-        # stderr, so only treat it as a hard failure if we got no xml at all
-        return None, f"Nmap exited with an error: {stderr.strip() or 'unknown error'}", cmd
+    stdout, stderr, error = _run_cancellable_subprocess(cmd, timeout_seconds, cancel_event)
+    if error:
+        return None, error, cmd
 
     return stdout, None, cmd
+
+
+# ---------------------------------------------------------------------
+# free-form custom nmap command, run from the GUI's "Custom Command" tab.
+# unlike run_nmap, this doesn't force -oX/XML output or any particular
+# flags - it runs exactly what the user typed (plus the target), and the
+# caller gets back raw text to display rather than a parsed HostInfo.
+# ---------------------------------------------------------------------
+
+def build_custom_nmap_command(custom_args: str, target: str) -> tuple[list[str], str | None]:
+    # splits the user's argument string shell-style and appends the
+    # target, unless the user already referenced it explicitly.
+    # returns (command, error_message).
+    nmap_path = shutil.which("nmap")
+    if not nmap_path:
+        return [], "Nmap executable not found on PATH."
+
+    try:
+        args = shlex.split(custom_args)
+    except ValueError as exc:
+        return [], f"Could not parse arguments: {exc}"
+
+    cmd = [nmap_path] + args
+    if target and target not in args:
+        cmd.append(target)
+    return cmd, None
+
+
+def run_custom_nmap(
+    custom_args: str,
+    target: str,
+    cancel_event: "threading.Event | None" = None,
+    timeout_seconds: float = CUSTOM_COMMAND_TIMEOUT_SECONDS,
+) -> tuple[str, str, str | None, list[str]]:
+    # returns (stdout, stderr, error_message, command). error_message is
+    # set on cancellation, timeout, missing nmap, or a bad argument
+    # string; stdout/stderr are returned regardless so partial output is
+    # never silently dropped.
+    cmd, error = build_custom_nmap_command(custom_args, target)
+    if error:
+        return "", "", error, cmd
+
+    stdout, stderr, error = _run_cancellable_subprocess(cmd, timeout_seconds, cancel_event)
+    return stdout, stderr, error, cmd
 
 
 # ---------------------------------------------------------------------

@@ -10,7 +10,7 @@ import webbrowser
 from config import Settings, SCAN_PROFILES, DEFAULT_PROFILE, DEFAULT_REPORTS_DIR
 from env_check import run_environment_check
 from validate import validate_target
-from nmap_scan import scan_target, HostInfo
+from nmap_scan import scan_target, HostInfo, run_custom_nmap, CUSTOM_COMMAND_TIMEOUT_SECONDS
 from exploits import load_exploit_index, correlate_all_services, ExploitMatch
 from report import generate_report, generate_html_report, _security_observations
 
@@ -113,6 +113,13 @@ class ReconApp:
         self.current_errors: list[str] = []
         self.scan_in_progress = False
         self.cancel_event: threading.Event | None = None
+
+        # state for the separate "Custom Command" tab - kept independent
+        # of the main profile-based scan above so a custom command can't
+        # be confused with (or clobber) a running standard scan
+        self.custom_result_queue: "queue.Queue" = queue.Queue()
+        self.custom_scan_in_progress = False
+        self.custom_cancel_event: threading.Event | None = None
 
         # per-treeview sort state/config, keyed by id(tree). purely a gui
         # presentation concern, never touches the underlying data objects
@@ -330,16 +337,19 @@ class ReconApp:
         self.tab_ports = ttk.Frame(self.notebook, padding=12)
         self.tab_findings = ttk.Frame(self.notebook, padding=12)
         self.tab_exploits = ttk.Frame(self.notebook, padding=12)
+        self.tab_custom = ttk.Frame(self.notebook, padding=12)
 
         self.notebook.add(self.tab_host, text="Host Info")
         self.notebook.add(self.tab_ports, text="Ports & Services")
         self.notebook.add(self.tab_findings, text="Security Findings")
         self.notebook.add(self.tab_exploits, text="Exploit Discovery")
+        self.notebook.add(self.tab_custom, text="Custom Command")
 
         self._build_host_tab()
         self._build_ports_tab()
         self._build_findings_tab()
         self._build_exploits_tab()
+        self._build_custom_tab()
 
     def _build_host_tab(self):
         container = ttk.Frame(self.tab_host)
@@ -521,6 +531,185 @@ class ReconApp:
         )
         self.open_exploit_btn.pack(side="right")
         self._selected_exploit_url: str | None = None
+
+    def _build_custom_tab(self):
+        # lets the user run nmap with whatever flags they want, rather
+        # than one of the fixed SCAN_PROFILES. output is shown raw
+        # (nmap's normal stdout, not XML) since there's no guarantee the
+        # user's flags produce something parseable into HostInfo.
+        intro = ttk.Label(
+            self.tab_custom,
+            text=(
+                "Runs Nmap directly with the arguments below, against the Target field at the "
+                "top of the window. Only scan systems you are authorized to test."
+            ),
+            style="Muted.TLabel", wraplength=900, justify="left",
+        )
+        intro.pack(fill="x", side="top", pady=(0, 8))
+
+        args_bar = ttk.Frame(self.tab_custom)
+        args_bar.pack(fill="x", side="top", pady=(0, 8))
+        ttk.Label(args_bar, text="Nmap arguments:").pack(side="left", padx=(0, 6))
+        self.custom_args_var = tk.StringVar(value="-sV -T4")
+        self.custom_args_entry = ttk.Entry(args_bar, textvariable=self.custom_args_var)
+        self.custom_args_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.custom_args_entry.bind("<Return>", lambda e: self._on_run_custom_command())
+
+        self.custom_run_button = ttk.Button(
+            args_bar, text="RUN COMMAND", style="Accent.TButton", command=self._on_run_custom_command,
+        )
+        self.custom_run_button.pack(side="left", padx=(0, 6))
+        self.custom_cancel_button = ttk.Button(
+            args_bar, text="CANCEL", style="Cancel.TButton", command=self._on_cancel_custom_command,
+            state="disabled",
+        )
+        self.custom_cancel_button.pack(side="left")
+
+        preview_bar = ttk.Frame(self.tab_custom)
+        preview_bar.pack(fill="x", side="top", pady=(0, 8))
+        self.custom_preview_var = tk.StringVar(value="nmap -sV -T4 <target>")
+        ttk.Label(preview_bar, textvariable=self.custom_preview_var, style="Muted.TLabel").pack(side="left")
+        self.custom_args_var.trace_add("write", lambda *_: self._update_custom_preview())
+
+        output_frame = ttk.Frame(self.tab_custom)
+        output_frame.pack(fill="both", expand=True, side="top")
+        self.custom_output_text = tk.Text(
+            output_frame, bg=BG_PANEL, fg=FG_TEXT, font=FONT_MONO_SMALL,
+            relief="flat", wrap="word", padx=10, pady=10,
+        )
+        output_scrollbar = ttk.Scrollbar(output_frame, orient="vertical", command=self.custom_output_text.yview)
+        self.custom_output_text.configure(yscrollcommand=output_scrollbar.set)
+        output_scrollbar.pack(side="right", fill="y")
+        self.custom_output_text.pack(side="left", fill="both", expand=True)
+        self.custom_output_text.configure(state="disabled")
+
+        bottom_bar = ttk.Frame(self.tab_custom)
+        bottom_bar.pack(fill="x", side="bottom", pady=(8, 0))
+        self.custom_status_var = tk.StringVar(value="Ready.")
+        ttk.Label(bottom_bar, textvariable=self.custom_status_var, style="Muted.TLabel").pack(side="left")
+        self.custom_save_button = ttk.Button(
+            bottom_bar, text="Save Output...", style="Secondary.TButton",
+            command=self._on_save_custom_output, state="disabled",
+        )
+        self.custom_save_button.pack(side="right")
+
+        self._custom_last_output = ""
+        self._update_custom_preview()
+
+    def _update_custom_preview(self):
+        # best-effort command preview only (uses shutil.which indirectly
+        # via build_custom_nmap_command at run time for the real check);
+        # this is just so the user can see roughly what will execute
+        args_text = self.custom_args_var.get().strip()
+        target_text = self.target_var.get().strip() or "<target>"
+        self.custom_preview_var.set(f"nmap {args_text} {target_text}".strip())
+
+    def _on_run_custom_command(self):
+        if self.custom_scan_in_progress:
+            return
+
+        raw_target = self.target_var.get()
+        target, error = validate_target(raw_target)
+        if error:
+            messagebox.showerror("Invalid target", error)
+            return
+
+        if not self._env_report.can_scan:
+            messagebox.showerror("Nmap unavailable", self._env_report.nmap.impact_if_missing)
+            return
+
+        custom_args = self.custom_args_var.get().strip()
+
+        self.custom_cancel_event = threading.Event()
+        self.custom_scan_in_progress = True
+        self.custom_run_button.configure(state="disabled")
+        self.custom_cancel_button.configure(state="normal")
+        self.custom_save_button.configure(state="disabled")
+        self._set_text(self.custom_output_text, "")
+        self.custom_status_var.set(f"Running: nmap {custom_args} {target} ...")
+
+        worker = threading.Thread(
+            target=self._run_custom_command_worker,
+            args=(custom_args, target, self.custom_cancel_event),
+            daemon=True,
+        )
+        worker.start()
+        self.root.after(200, self._poll_custom_queue)
+
+    def _on_cancel_custom_command(self):
+        if self.custom_scan_in_progress and self.custom_cancel_event is not None:
+            self.custom_cancel_event.set()
+            self.custom_status_var.set("Cancelling...")
+            self.custom_cancel_button.configure(state="disabled")
+
+    def _run_custom_command_worker(self, custom_args: str, target: str, cancel_event: threading.Event):
+        # background thread only - never touches tkinter widgets directly,
+        # same reasoning as _run_scan_worker above
+        try:
+            stdout, stderr, error, cmd = run_custom_nmap(
+                custom_args, target, cancel_event=cancel_event,
+                timeout_seconds=CUSTOM_COMMAND_TIMEOUT_SECONDS,
+            )
+            self.custom_result_queue.put(("done", (stdout, stderr, error, cmd)))
+        except Exception as exc:  # noqa: BLE001 -- last-resort safety net
+            self.custom_result_queue.put(("done", ("", "", f"Unexpected error: {exc}", [])))
+
+    def _poll_custom_queue(self):
+        try:
+            _kind, payload = self.custom_result_queue.get_nowait()
+        except queue.Empty:
+            if self.custom_scan_in_progress:
+                self.root.after(200, self._poll_custom_queue)
+            return
+
+        self.custom_scan_in_progress = False
+        self.custom_cancel_event = None
+        self.custom_run_button.configure(state="normal")
+        self.custom_cancel_button.configure(state="disabled")
+
+        stdout, stderr, error, cmd = payload
+        command_line = " ".join(cmd) if cmd else ""
+        output_parts = []
+        if command_line:
+            output_parts.append(f"$ {command_line}\n")
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            output_parts.append("\n--- stderr ---\n" + stderr)
+        if error:
+            output_parts.append(f"\n--- {error} ---\n")
+
+        full_output = "".join(output_parts) or "(no output)"
+        self._custom_last_output = full_output
+        self._set_text(self.custom_output_text, full_output)
+        self.custom_save_button.configure(state="normal")
+
+        if error and "cancelled" in error.lower():
+            self.custom_status_var.set("Cancelled.")
+        elif error:
+            self.custom_status_var.set(f"Finished with an error: {error}")
+        else:
+            self.custom_status_var.set("Done.")
+
+    def _on_save_custom_output(self):
+        if not self._custom_last_output:
+            return
+        DEFAULT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        save_path = filedialog.asksaveasfilename(
+            title="Save custom command output as...",
+            initialdir=str(DEFAULT_REPORTS_DIR),
+            initialfile="custom_nmap_output.txt",
+            defaultextension=".txt",
+            filetypes=[("Text file", "*.txt")],
+        )
+        if not save_path:
+            return
+        try:
+            Path(save_path).write_text(self._custom_last_output, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save output: {exc}")
+            return
+        self.custom_status_var.set(f"Output saved to {save_path}")
 
     def _build_bottom_bar(self, parent):
         bar = ttk.Frame(parent)
