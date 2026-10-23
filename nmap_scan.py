@@ -11,9 +11,11 @@ from datetime import datetime
 
 from config import SCAN_PROFILES
 
-# upper bound on how long a user-supplied custom nmap command is allowed to
-# run before it's killed automatically, same safety net the scan profiles
-# already have via their own timeout_seconds
+# upper bound on how long a custom-built nmap command (Custom Command tab)
+# is allowed to run before it's killed automatically, same safety net the
+# scan profiles already have via their own timeout_seconds. generous since
+# the user can tick on slow options (-O, -sC, all ports); the Cancel button
+# covers the "I didn't mean to wait that long" case.
 CUSTOM_COMMAND_TIMEOUT_SECONDS = 3600
 
 
@@ -136,20 +138,16 @@ def _run_cancellable_subprocess(
             if reader_thread.is_alive():
                 process.kill()  # make sure nothing orphaned survives
                 reader_thread.join()
-            return (
-                result_holder.get("stdout", "") or "",
-                result_holder.get("stderr", "") or "",
-                "Scan cancelled by user.",
-            )
+            stdout = result_holder.get("stdout", "") or ""
+            stderr = result_holder.get("stderr", "") or ""
+            return stdout, stderr, "Scan cancelled by user."
 
         if time.monotonic() - start_time > timeout_seconds:
             process.kill()
             reader_thread.join()
-            return (
-                result_holder.get("stdout", "") or "",
-                result_holder.get("stderr", "") or "",
-                f"Scan timed out after {timeout_seconds} seconds.",
-            )
+            stdout = result_holder.get("stdout", "") or ""
+            stderr = result_holder.get("stderr", "") or ""
+            return stdout, stderr, f"Scan timed out after {timeout_seconds} seconds."
 
         time.sleep(poll_interval)
 
@@ -197,47 +195,100 @@ def run_nmap(
 
 
 # ---------------------------------------------------------------------
-# free-form custom nmap command, run from the GUI's "Custom Command" tab.
-# unlike run_nmap, this doesn't force -oX/XML output or any particular
-# flags - it runs exactly what the user typed (plus the target), and the
-# caller gets back raw text to display rather than a parsed HostInfo.
+# step 1b: build + run a custom, checkbox/option-built nmap command from
+# the GUI's "Custom Command" tab. unlike a fixed SCAN_PROFILES entry,
+# every flag here is picked by the user at scan time - but it's built
+# the same way build_nmap_command() builds a profile's command, and it
+# always captures -oX - so the result parses into the same HostInfo as
+# a normal scan and can be shown in the same Host Info / Ports & Services
+# / Security Findings tabs rather than as a separate wall of raw text.
 # ---------------------------------------------------------------------
 
-def build_custom_nmap_command(custom_args: str, target: str) -> tuple[list[str], str | None]:
-    # splits the user's argument string shell-style and appends the
-    # target, unless the user already referenced it explicitly.
-    # returns (command, error_message).
+VALID_TIMING_TEMPLATES = ("T0", "T1", "T2", "T3", "T4", "T5")
+PORT_MODE_DEFAULT = "default"   # nmap's own default (top 1000 TCP ports)
+PORT_MODE_ALL = "all"           # -p- (all 65535 TCP ports)
+PORT_MODE_TOP = "top"           # --top-ports N
+PORT_MODE_CUSTOM = "custom"     # -p <port_value>, e.g. "22,80,8000-8100"
+
+
+def build_custom_nmap_command(
+    target: str,
+    service_version: bool = True,
+    os_detection: bool = False,
+    script_scan: bool = False,
+    udp_scan: bool = False,
+    timing: str = "T4",
+    port_mode: str = PORT_MODE_DEFAULT,
+    port_value: str = "",
+    extra_args: str = "",
+) -> tuple[list[str], str | None]:
+    # builds the nmap argument list from the options chosen in the GUI.
+    # returns (command, error_message), error_message set if nmap isn't
+    # found, the timing template is invalid, or extra_args doesn't parse.
     nmap_path = shutil.which("nmap")
     if not nmap_path:
         return [], "Nmap executable not found on PATH."
 
-    try:
-        args = shlex.split(custom_args)
-    except ValueError as exc:
-        return [], f"Could not parse arguments: {exc}"
+    if timing not in VALID_TIMING_TEMPLATES:
+        return [], f"Invalid timing template: {timing}"
 
-    cmd = [nmap_path] + args
-    if target and target not in args:
-        cmd.append(target)
+    cmd = [nmap_path]
+    if service_version:
+        cmd.append("-sV")
+    if udp_scan:
+        # -sS = TCP SYN scan, -sU = UDP scan, combined so a UDP scan still
+        # covers TCP too (same reasoning as the Comprehensive profile)
+        cmd += ["-sS", "-sU"]
+    if os_detection:
+        cmd.append("-O")
+    if script_scan:
+        cmd.append("-sC")  # nmap's default (safe) script set for extra banner/info detail
+
+    if port_mode == PORT_MODE_ALL:
+        cmd.append("-p-")
+    elif port_mode == PORT_MODE_TOP:
+        cmd += ["--top-ports", port_value.strip() or "100"]
+    elif port_mode == PORT_MODE_CUSTOM and port_value.strip():
+        cmd += ["-p", port_value.strip()]
+    # PORT_MODE_DEFAULT: no port flag at all, nmap's own default applies
+
+    if extra_args.strip():
+        try:
+            cmd += shlex.split(extra_args)
+        except ValueError as exc:
+            return [], f"Could not parse additional arguments: {exc}"
+
+    cmd += [f"-{timing}", "-oX", "-", target]
     return cmd, None
 
 
 def run_custom_nmap(
-    custom_args: str,
     target: str,
     cancel_event: "threading.Event | None" = None,
     timeout_seconds: float = CUSTOM_COMMAND_TIMEOUT_SECONDS,
-) -> tuple[str, str, str | None, list[str]]:
-    # returns (stdout, stderr, error_message, command). error_message is
-    # set on cancellation, timeout, missing nmap, or a bad argument
-    # string; stdout/stderr are returned regardless so partial output is
-    # never silently dropped.
-    cmd, error = build_custom_nmap_command(custom_args, target)
+    **build_kwargs,
+) -> tuple[HostInfo | None, str | None]:
+    # same (host_info, error_message) contract as scan_target(), so the
+    # GUI can run this through the exact same worker/queue/render pipeline
+    # as a normal profile scan. the command itself is built from
+    # build_kwargs (the custom tab's options) instead of a named profile.
+    started_at = datetime.now()
+    start_clock = time.monotonic()
+
+    cmd, error = build_custom_nmap_command(target, **build_kwargs)
     if error:
-        return "", "", error, cmd
+        return None, error
 
     stdout, stderr, error = _run_cancellable_subprocess(cmd, timeout_seconds, cancel_event)
-    return stdout, stderr, error, cmd
+    if error:
+        return None, error
+
+    host_info = parse_nmap_xml(stdout, target)
+    host_info.nmap_command = " ".join(cmd)
+    host_info.scan_started = started_at.strftime("%Y-%m-%d %H:%M:%S")
+    host_info.scan_completed = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    host_info.scan_duration_seconds = round(time.monotonic() - start_clock, 1)
+    return host_info, None
 
 
 # ---------------------------------------------------------------------
