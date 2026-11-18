@@ -12,4 +12,4 @@ env/
 *.log
 
 reports/
-
+files_exploits.csv
