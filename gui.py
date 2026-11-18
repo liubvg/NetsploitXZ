@@ -38,11 +38,9 @@ ACCENT = "#3ddc97"              # muted green accent (primary)
 ACCENT_DARK = "#2bb87f"
 ACCENT_CYAN = "#4fd1c5"         # secondary accent for subtitles/info
 COLOR_HIGH = "#ff5c5c"
-COLOR_INFO = "#8b93a7"
 FONT_NORMAL = ("Segoe UI", 10)
 FONT_HEADER = ("Segoe UI", 15, "bold")
 FONT_SUBHEADER = ("Segoe UI", 9)
-FONT_SECTION = ("Segoe UI", 10, "bold")
 FONT_MONO = ("Consolas", 10)
 FONT_MONO_SMALL = ("Consolas", 9)
 
@@ -147,8 +145,6 @@ class ReconApp:
         style.configure("Tagline.TLabel", background=BG_DARK, foreground=ACCENT_CYAN, font=FONT_SUBHEADER)
         style.configure("Muted.TLabel", background=BG_DARK, foreground=FG_MUTED, font=FONT_NORMAL)
         style.configure("Panel.TLabel", background=BG_PANEL, foreground=FG_TEXT, font=FONT_NORMAL)
-        style.configure("Section.TLabel", background=BG_DARK, foreground=FG_TEXT, font=FONT_SECTION)
-        style.configure("StatusCard.TLabel", background=BG_PANEL_ALT, foreground=FG_TEXT, font=FONT_NORMAL)
 
         style.configure("TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT,
                          bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
@@ -221,8 +217,6 @@ class ReconApp:
                          font=("Segoe UI", 9, "bold"), relief="flat", padding=(4, 4))
         style.map("Treeview.Heading", background=[("active", "#2c3145")])
         style.map("Treeview", background=[("selected", ACCENT_DARK)], foreground=[("selected", "#0b0b12")])
-
-        style.configure("StatusCard.TFrame", background=BG_PANEL_ALT, relief="flat", borderwidth=1)
 
         style.configure("Filter.TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT)
 
@@ -576,16 +570,6 @@ class ReconApp:
             if str(self.notebook.tab(self.notebook.select(), "text")) == "Custom Command" else None,
         )
 
-        ttk.Label(
-            body,
-            text=(
-                "Builds and runs a custom Nmap command against the Target field at the top of "
-                "the window. Results appear in the tabs above, same as a profile scan. Only scan "
-                "systems you are authorized to test."
-            ),
-            style="Muted.TLabel", wraplength=880, justify="left",
-        ).pack(fill="x", side="top", pady=(0, 12))
-
         # --- card: detection flags, as a 2x2 grid so each option gets
         # its own cell instead of competing for space in one long row ---
         flags_card = ttk.Labelframe(body, text="Detection Options", style="Card.TLabelframe", padding=12)
@@ -682,10 +666,6 @@ class ReconApp:
         extra_entry.pack(fill="x", side="top")
         extra_entry.bind("<Return>", lambda e: self._on_run_custom_command())
         self.custom_extra_var.trace_add("write", lambda *_: self._update_custom_preview())
-        ttk.Label(
-            extra_card, text="Any other raw Nmap flags, e.g. --script vuln or -Pn. Appended as-is.",
-            style="CardHint.TLabel",
-        ).pack(anchor="w", pady=(6, 0))
 
         # --- live command preview, styled as a one-line code block ---
         preview_card = ttk.Labelframe(body, text="Command Preview", style="Card.TLabelframe", padding=12)
@@ -708,13 +688,6 @@ class ReconApp:
             state="disabled",
         )
         self.custom_cancel_button.pack(side="left")
-
-        ttk.Label(
-            body,
-            text="Results, including Nmap's own progress, land in the Host Info / Ports & Services / "
-                 "Security Findings tabs once the scan finishes - watch the progress bar above the tabs.",
-            style="Muted.TLabel", wraplength=880, justify="left",
-        ).pack(fill="x", side="top", pady=(4, 0))
 
         self.target_var.trace_add("write", lambda *_: self._update_custom_preview())
         self._update_custom_preview()
