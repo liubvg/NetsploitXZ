@@ -56,12 +56,9 @@ def check_nmap() -> ComponentStatus:
                 "(select 'Add to PATH' during setup), then restart this app."
             ),
         )
+
     try:
         result = subprocess.run([nmap_path, "-V"], capture_output=True, text=True, timeout=10)
-        first_line = result.stdout.splitlines()[0] if result.stdout else "Nmap (version unknown)"
-        return ComponentStatus(
-            name="Nmap", available=True, detail=f"{first_line} ({nmap_path})", impact_if_missing="N/A"
-        )
     except (subprocess.SubprocessError, OSError) as exc:
         return ComponentStatus(
             name="Nmap",
@@ -69,6 +66,11 @@ def check_nmap() -> ComponentStatus:
             detail=f"Found at {nmap_path} but failed to execute: {exc}",
             impact_if_missing="Scanning cannot begin until Nmap runs correctly.",
         )
+
+    first_line = result.stdout.splitlines()[0] if result.stdout else "Nmap (version unknown)"
+    return ComponentStatus(
+        name="Nmap", available=True, detail=f"{first_line} ({nmap_path})", impact_if_missing="N/A"
+    )
 
 
 def check_exploitdb(settings: Settings) -> ComponentStatus:
@@ -104,10 +106,9 @@ def check_exploitdb(settings: Settings) -> ComponentStatus:
 
 
 def check_privileges() -> ComponentStatus:
-    # informational only. some nmap features (OS detection, SYN/UDP scans)
-    # need elevated privileges to work fully, but we never block a scan
-    # just because the app isn't elevated - nmap itself falls back to
-    # slower/less accurate techniques
+    # informational only: some nmap features (OS detection, SYN/UDP scans)
+    # need elevated privileges, but we never block a scan over this -
+    # nmap itself falls back to slower/less accurate techniques
     try:
         if os.name == "nt":
             is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
