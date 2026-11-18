@@ -13,7 +13,7 @@ from validate import validate_target
 import nmap_scan
 from nmap_scan import (
     scan_target, HostInfo, run_custom_nmap, build_custom_nmap_command,
-    CUSTOM_COMMAND_TIMEOUT_SECONDS, VALID_TIMING_TEMPLATES,
+    validate_port_spec, CUSTOM_COMMAND_TIMEOUT_SECONDS, VALID_TIMING_TEMPLATES,
 )
 from exploits import load_exploit_index, correlate_all_services, ExploitMatch
 from report import generate_report, generate_html_report, _security_observations
@@ -225,6 +225,22 @@ class ReconApp:
         style.configure("StatusCard.TFrame", background=BG_PANEL_ALT, relief="flat", borderwidth=1)
 
         style.configure("Filter.TEntry", fieldbackground=BG_INPUT, foreground=FG_TEXT, insertcolor=ACCENT)
+
+        # section "cards" used by the Custom Command tab: a titled,
+        # bordered group (ttk.LabelFrame) so related controls are visually
+        # boxed together instead of running on as one unbroken strip
+        style.configure(
+            "Card.TLabelframe", background=BG_PANEL, bordercolor=BORDER,
+            lightcolor=BORDER, darkcolor=BORDER, borderwidth=1, relief="solid",
+        )
+        style.configure(
+            "Card.TLabelframe.Label", background=BG_PANEL, foreground=ACCENT_CYAN,
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.configure("CardHint.TLabel", background=BG_PANEL, foreground=FG_MUTED, font=FONT_SUBHEADER)
+        style.configure("CardBody.TLabel", background=BG_PANEL, foreground=FG_TEXT, font=FONT_NORMAL)
+        # the live command preview reads as a one-line code block
+        style.configure("Code.TLabel", background=BG_INPUT, foreground=ACCENT, font=FONT_MONO_SMALL)
 
     # -------------------------------------------------------------
     # layout
@@ -537,90 +553,152 @@ class ReconApp:
         # same HostInfo a profile scan produces and is shown in the same
         # Host Info / Ports & Services / Security Findings / Exploit
         # Discovery tabs - there's no separate results view here.
-        intro = ttk.Label(
-            self.tab_custom,
+        #
+        # laid out as a vertical stack of titled "cards" (one concern per
+        # card: detection flags, port scope, extra args) rather than three
+        # dense horizontal rows, so each control has room to carry its own
+        # label/hint instead of being packed shoulder-to-shoulder.
+        scroll_container = ttk.Frame(self.tab_custom)
+        scroll_container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_container, bg=BG_DARK, highlightthickness=0)
+        v_scroll = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=v_scroll.set)
+        v_scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        body = ttk.Frame(canvas)
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(body_window, width=e.width))
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            if str(self.notebook.tab(self.notebook.select(), "text")) == "Custom Command" else None,
+        )
+
+        ttk.Label(
+            body,
             text=(
                 "Builds and runs a custom Nmap command against the Target field at the top of "
                 "the window. Results appear in the tabs above, same as a profile scan. Only scan "
                 "systems you are authorized to test."
             ),
-            style="Muted.TLabel", wraplength=900, justify="left",
-        )
-        intro.pack(fill="x", side="top", pady=(0, 10))
+            style="Muted.TLabel", wraplength=880, justify="left",
+        ).pack(fill="x", side="top", pady=(0, 12))
 
-        options_frame = ttk.Frame(self.tab_custom, style="Panel.TFrame", padding=10)
-        options_frame.pack(fill="x", side="top", pady=(0, 8))
+        # --- card: detection flags, as a 2x2 grid so each option gets
+        # its own cell instead of competing for space in one long row ---
+        flags_card = ttk.Labelframe(body, text="Detection Options", style="Card.TLabelframe", padding=12)
+        flags_card.pack(fill="x", side="top", pady=(0, 10))
+        flags_grid = ttk.Frame(flags_card, style="Panel.TFrame")
+        flags_grid.pack(fill="x")
+        flags_grid.columnconfigure((0, 1), weight=1, uniform="flags")
 
-        # --- row 1: detection flags ---
-        flags_row = ttk.Frame(options_frame, style="Panel.TFrame")
-        flags_row.pack(fill="x", pady=(0, 8))
         self.custom_sv_var = tk.BooleanVar(value=True)
         self.custom_os_var = tk.BooleanVar(value=False)
         self.custom_sc_var = tk.BooleanVar(value=False)
         self.custom_udp_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(flags_row, text="Service/Version Detection (-sV)", variable=self.custom_sv_var,
-                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(flags_row, text="OS Detection (-O)", variable=self.custom_os_var,
-                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(flags_row, text="Default Script Scan (-sC)", variable=self.custom_sc_var,
-                         command=self._update_custom_preview).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(flags_row, text="UDP Scan (-sS -sU)", variable=self.custom_udp_var,
-                         command=self._update_custom_preview).pack(side="left")
+        flag_options = (
+            (self.custom_sv_var, "Service/Version Detection  (-sV)"),
+            (self.custom_os_var, "OS Detection  (-O)"),
+            (self.custom_sc_var, "Default Script Scan  (-sC)"),
+            (self.custom_udp_var, "UDP Scan  (-sS -sU)"),
+        )
+        for i, (var, text) in enumerate(flag_options):
+            ttk.Checkbutton(
+                flags_grid, text=text, variable=var, command=self._update_custom_preview,
+            ).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 12), pady=3)
 
-        # --- row 2: timing + port selection ---
-        scope_row = ttk.Frame(options_frame, style="Panel.TFrame")
-        scope_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(scope_row, text="Timing:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        # --- card: timing + port scope, each port mode on its own row so
+        # the entry field it needs sits right next to it, not off in a
+        # shared strip with the other three modes ---
+        scope_card = ttk.Labelframe(body, text="Scan Scope", style="Card.TLabelframe", padding=12)
+        scope_card.pack(fill="x", side="top", pady=(0, 10))
+
+        timing_row = ttk.Frame(scope_card, style="Panel.TFrame")
+        timing_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(timing_row, text="Timing template:", style="CardBody.TLabel").pack(side="left", padx=(0, 8))
         self.custom_timing_var = tk.StringVar(value="T4")
         timing_box = ttk.Combobox(
-            scope_row, textvariable=self.custom_timing_var, values=list(VALID_TIMING_TEMPLATES),
+            timing_row, textvariable=self.custom_timing_var, values=list(VALID_TIMING_TEMPLATES),
             state="readonly", width=4,
         )
-        timing_box.pack(side="left", padx=(0, 16))
+        timing_box.pack(side="left")
         timing_box.bind("<<ComboboxSelected>>", lambda e: self._update_custom_preview())
+        ttk.Label(
+            timing_row, text="(T0 slowest/stealthiest - T5 fastest/noisiest)", style="CardHint.TLabel",
+        ).pack(side="left", padx=(8, 0))
 
-        ttk.Label(scope_row, text="Ports:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        ttk.Separator(scope_card, orient="horizontal").pack(fill="x", pady=(0, 10))
+        ttk.Label(scope_card, text="Ports to scan:", style="CardBody.TLabel").pack(anchor="w", pady=(0, 6))
+
         self.custom_port_mode_var = tk.StringVar(value=nmap_scan.PORT_MODE_DEFAULT)
-        port_modes = (
-            (nmap_scan.PORT_MODE_DEFAULT, "Default (top 1000)"),
+        # Top N and Custom list/range get their own StringVar each (rather
+        # than sharing one) so typing into one doesn't echo into the
+        # other's box - only the box for the active mode is ever read.
+        self.custom_port_value_vars = {
+            nmap_scan.PORT_MODE_TOP: tk.StringVar(value=""),
+            nmap_scan.PORT_MODE_CUSTOM: tk.StringVar(value=""),
+        }
+        self._custom_port_hints = {
+            nmap_scan.PORT_MODE_DEFAULT: "Nmap's own default scan - top 1,000 TCP ports.",
+            nmap_scan.PORT_MODE_ALL: "Every TCP port, 1-65535. Slow, but thorough.",
+            nmap_scan.PORT_MODE_TOP: "Scan the N most common ports, ranked by Nmap.",
+            nmap_scan.PORT_MODE_CUSTOM: "Comma-separated ports and/or ranges, e.g. 22,80,443,8000-8100",
+        }
+        port_rows = (
+            (nmap_scan.PORT_MODE_DEFAULT, "Default (top 1,000)"),
             (nmap_scan.PORT_MODE_ALL, "All ports (-p-)"),
-            (nmap_scan.PORT_MODE_TOP, "Top N"),
-            (nmap_scan.PORT_MODE_CUSTOM, "Custom list/range"),
+            (nmap_scan.PORT_MODE_TOP, "Top N ports"),
+            (nmap_scan.PORT_MODE_CUSTOM, "Custom list / range"),
         )
-        for value, text in port_modes:
+        self.custom_port_value_entries: dict[str, ttk.Entry] = {}
+        for value, text in port_rows:
+            row = ttk.Frame(scope_card, style="Panel.TFrame")
+            row.pack(fill="x", pady=2)
             ttk.Radiobutton(
-                scope_row, text=text, value=value, variable=self.custom_port_mode_var,
+                row, text=text, value=value, variable=self.custom_port_mode_var, width=20,
                 command=self._on_custom_port_mode_changed,
-            ).pack(side="left", padx=(0, 10))
+            ).pack(side="left")
 
-        self.custom_port_value_var = tk.StringVar(value="")
-        self.custom_port_value_entry = ttk.Entry(scope_row, textvariable=self.custom_port_value_var, width=16)
-        self.custom_port_value_entry.pack(side="left", padx=(4, 0))
-        self.custom_port_value_var.trace_add("write", lambda *_: self._update_custom_preview())
-        self.custom_port_value_entry.configure(state="disabled")
+            if value in (nmap_scan.PORT_MODE_TOP, nmap_scan.PORT_MODE_CUSTOM):
+                entry = ttk.Entry(row, textvariable=self.custom_port_value_vars[value], width=28)
+                entry.pack(side="left", padx=(8, 10))
+                entry.configure(state="disabled")
+                entry.bind("<FocusIn>", lambda e, v=value: self._on_custom_port_mode_selected(v))
+                self.custom_port_value_entries[value] = entry
+                self.custom_port_value_vars[value].trace_add("write", lambda *_: self._update_custom_preview())
+                ttk.Label(row, text=self._custom_port_hints[value], style="CardHint.TLabel").pack(side="left")
+            else:
+                ttk.Label(row, text=self._custom_port_hints[value], style="CardHint.TLabel").pack(
+                    side="left", padx=(8, 0)
+                )
 
-        # --- row 3: free-form extra args, for anything not covered above ---
-        extra_row = ttk.Frame(options_frame, style="Panel.TFrame")
-        extra_row.pack(fill="x")
-        ttk.Label(extra_row, text="Additional arguments:", style="Panel.TLabel").pack(side="left", padx=(0, 6))
+        # --- card: free-form extra args, for anything not covered above ---
+        extra_card = ttk.Labelframe(body, text="Additional Arguments", style="Card.TLabelframe", padding=12)
+        extra_card.pack(fill="x", side="top", pady=(0, 10))
         self.custom_extra_var = tk.StringVar(value="")
-        extra_entry = ttk.Entry(extra_row, textvariable=self.custom_extra_var)
-        extra_entry.pack(side="left", fill="x", expand=True)
+        extra_entry = ttk.Entry(extra_card, textvariable=self.custom_extra_var)
+        extra_entry.pack(fill="x", side="top")
         extra_entry.bind("<Return>", lambda e: self._on_run_custom_command())
         self.custom_extra_var.trace_add("write", lambda *_: self._update_custom_preview())
+        ttk.Label(
+            extra_card, text="Any other raw Nmap flags, e.g. --script vuln or -Pn. Appended as-is.",
+            style="CardHint.TLabel",
+        ).pack(anchor="w", pady=(6, 0))
 
-        preview_bar = ttk.Frame(self.tab_custom)
-        preview_bar.pack(fill="x", side="top", pady=(0, 10))
-        ttk.Label(preview_bar, text="Command:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        # --- live command preview, styled as a one-line code block ---
+        preview_card = ttk.Labelframe(body, text="Command Preview", style="Card.TLabelframe", padding=12)
+        preview_card.pack(fill="x", side="top", pady=(0, 10))
         self.custom_preview_var = tk.StringVar()
         preview_label = ttk.Label(
-            preview_bar, textvariable=self.custom_preview_var, style="Muted.TLabel",
-            wraplength=900, justify="left",
+            preview_card, textvariable=self.custom_preview_var, style="Code.TLabel",
+            wraplength=860, justify="left", padding=(8, 6),
         )
-        preview_label.pack(side="left", fill="x", expand=True)
+        preview_label.pack(fill="x")
 
-        run_bar = ttk.Frame(self.tab_custom)
-        run_bar.pack(fill="x", side="top")
+        run_bar = ttk.Frame(body)
+        run_bar.pack(fill="x", side="top", pady=(0, 6))
         self.custom_run_button = ttk.Button(
             run_bar, text="RUN CUSTOM SCAN", style="Accent.TButton", command=self._on_run_custom_command,
         )
@@ -631,21 +709,33 @@ class ReconApp:
         )
         self.custom_cancel_button.pack(side="left")
 
-        note = ttk.Label(
-            self.tab_custom,
+        ttk.Label(
+            body,
             text="Results, including Nmap's own progress, land in the Host Info / Ports & Services / "
                  "Security Findings tabs once the scan finishes - watch the progress bar above the tabs.",
-            style="Muted.TLabel", wraplength=900, justify="left",
-        )
-        note.pack(fill="x", side="top", pady=(10, 0))
+            style="Muted.TLabel", wraplength=880, justify="left",
+        ).pack(fill="x", side="top", pady=(4, 0))
 
         self.target_var.trace_add("write", lambda *_: self._update_custom_preview())
         self._update_custom_preview()
 
+    def _on_custom_port_mode_selected(self, value: str):
+        # clicking into a mode's entry field also selects that radio
+        # button, so typing into the "Custom list/range" box doesn't
+        # silently apply to whichever mode happened to be selected before
+        if self.custom_port_mode_var.get() != value:
+            self.custom_port_mode_var.set(value)
+            self._on_custom_port_mode_changed()
+
     def _on_custom_port_mode_changed(self):
-        needs_value = self.custom_port_mode_var.get() in (nmap_scan.PORT_MODE_TOP, nmap_scan.PORT_MODE_CUSTOM)
-        self.custom_port_value_entry.configure(state="normal" if needs_value else "disabled")
+        active_mode = self.custom_port_mode_var.get()
+        for mode, entry in self.custom_port_value_entries.items():
+            entry.configure(state="normal" if mode == active_mode else "disabled")
         self._update_custom_preview()
+
+    def _current_custom_port_value(self) -> str:
+        active_var = self.custom_port_value_vars.get(self.custom_port_mode_var.get())
+        return active_var.get() if active_var else ""
 
     def _current_custom_build_kwargs(self) -> dict:
         return dict(
@@ -655,15 +745,24 @@ class ReconApp:
             udp_scan=self.custom_udp_var.get(),
             timing=self.custom_timing_var.get(),
             port_mode=self.custom_port_mode_var.get(),
-            port_value=self.custom_port_value_var.get(),
+            port_value=self._current_custom_port_value(),
             extra_args=self.custom_extra_var.get(),
         )
 
     def _update_custom_preview(self):
         # uses the real builder, so the preview is exactly what will run
-        # (including the "nmap not found" case), not an approximation
+        # (including the "nmap not found" case), not an approximation.
+        # for Custom list/range specifically, also surface the syntax
+        # check live rather than waiting for "Run" to reject it.
+        build_kwargs = self._current_custom_build_kwargs()
+        if build_kwargs["port_mode"] == nmap_scan.PORT_MODE_CUSTOM and build_kwargs["port_value"].strip():
+            port_error = validate_port_spec(build_kwargs["port_value"])
+            if port_error:
+                self.custom_preview_var.set(port_error)
+                return
+
         target_text = self.target_var.get().strip() or "<target>"
-        cmd, error = build_custom_nmap_command(target_text, **self._current_custom_build_kwargs())
+        cmd, error = build_custom_nmap_command(target_text, **build_kwargs)
         if error and not cmd:
             self.custom_preview_var.set(error)
         else:
@@ -685,8 +784,14 @@ class ReconApp:
 
         build_kwargs = self._current_custom_build_kwargs()
         port_mode = build_kwargs["port_mode"]
-        if port_mode in (nmap_scan.PORT_MODE_TOP, nmap_scan.PORT_MODE_CUSTOM) and not build_kwargs["port_value"].strip():
-            messagebox.showerror("Missing port value", "Enter a port count or list/range for the selected port mode.")
+        port_value = build_kwargs["port_value"].strip()
+        if port_mode == nmap_scan.PORT_MODE_CUSTOM:
+            port_error = nmap_scan.validate_port_spec(port_value)
+            if port_error:
+                messagebox.showerror("Invalid port list/range", port_error)
+                return
+        elif port_mode == nmap_scan.PORT_MODE_TOP and not port_value.isdigit():
+            messagebox.showerror("Invalid port count", "Enter a whole number for Top N, e.g. 100.")
             return
 
         self._launch_scan(

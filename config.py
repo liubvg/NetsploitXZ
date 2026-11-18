@@ -4,8 +4,6 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-# where we remember small settings between runs (e.g. path to the
-# exploitdb csv picked last time)
 APP_DIR = Path.home() / ".ehpt_recon_tool"
 SETTINGS_FILE = APP_DIR / "settings.json"
 
@@ -66,13 +64,13 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
-        if SETTINGS_FILE.exists():
-            try:
-                data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-                return cls(**{**asdict(cls()), **data})
-            except (json.JSONDecodeError, OSError, TypeError):
-                return cls()
-        return cls()
+        if not SETTINGS_FILE.exists():
+            return cls()
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            return cls(**{**asdict(cls()), **data})
+        except (json.JSONDecodeError, OSError, TypeError):
+            return cls()
 
     def save(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)

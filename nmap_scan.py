@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -209,6 +210,31 @@ PORT_MODE_DEFAULT = "default"   # nmap's own default (top 1000 TCP ports)
 PORT_MODE_ALL = "all"           # -p- (all 65535 TCP ports)
 PORT_MODE_TOP = "top"           # --top-ports N
 PORT_MODE_CUSTOM = "custom"     # -p <port_value>, e.g. "22,80,8000-8100"
+
+# each comma-separated token nmap's own -p flag accepts: a plain port, a
+# port range, or either prefixed with T: / U: to pin it to TCP or UDP
+# (e.g. "T:80,U:53,8000-8100"). this is a syntax sanity check only, run
+# client-side so a typo gets a clear message instead of waiting for nmap
+# to reject it after a scan is launched - it does not duplicate nmap's
+# own range/validity rules (e.g. it won't catch a port number > 65535).
+_PORT_TOKEN_RE = re.compile(r"^(?:[TUtu]:)?\d{1,5}(?:-\d{1,5})?$")
+
+
+def validate_port_spec(port_value: str) -> str | None:
+    # returns None if port_value looks like a valid nmap -p argument,
+    # otherwise a short user-facing error message
+    cleaned = port_value.strip()
+    if not cleaned:
+        return "Enter a port list or range, e.g. 22,80,8000-8100."
+
+    for raw_token in cleaned.split(","):
+        token = raw_token.strip()
+        if not token:
+            return "Remove the empty entry between commas."
+        if not _PORT_TOKEN_RE.match(token):
+            return f"'{token}' isn't a valid port or port range (e.g. 80 or 8000-8100)."
+
+    return None
 
 
 def build_custom_nmap_command(
